@@ -1,0 +1,15 @@
+sqlite tables: 21
+mysql tables: 18
+total union tables: 21
+--- chat_sessions
+  only in sqlite schema: ["id","user_id","status","created_at","closed_at"]
+--- chats
+  only in sqlite schema: ["id","sender_id","receiver_id","session_id","message","is_read","created_at"]
+--- game_accounts
+  only in sqlite schema: ["rank"]
+  only in mysql dump: ["rank_name"]
+--- packages
+  only in sqlite schema: ["rank"]
+  only in mysql dump: ["rank_text"]
+--- settings
+  only in sqlite schema: ["key","value"]

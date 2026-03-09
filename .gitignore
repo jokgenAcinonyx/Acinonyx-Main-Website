@@ -1,0 +1,31 @@
+# Dependency
+node_modules/
+
+# Database Local (Peninggalan SQLite)
+*.db
+*.db-journal
+
+# Environment Secrets (SANGAT PENTING)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build Output
+dist/
+build/
+.cache/
+
+# Debug Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Editor Settings
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj

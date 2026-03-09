@@ -1,0 +1,110 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-amber-primary: #f59e0b;
+  --color-amber-light: #fbbf24;
+  --color-amber-dark: #d97706;
+
+  /* Semantic aliases */
+  --color-orange-primary: var(--color-amber-primary);
+
+  --color-bg-main: var(--bg-main);
+  --color-bg-sidebar: var(--bg-sidebar);
+  --color-bg-card: var(--bg-card);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-text-main: var(--text-main);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+  --color-border-main: var(--border-main);
+  --color-border-subtle: var(--border-subtle);
+}
+
+:root {
+  --bg-main: #111113;
+  --bg-sidebar: #18181b;
+  --bg-card: #1e1e22;
+  --bg-elevated: #27272a;
+  --text-main: #e4e4e7;
+  --text-muted: #a1a1aa;
+  --text-faint: #71717a;
+  --border-main: #27272a;
+  --border-subtle: #1e1e22;
+}
+
+.light {
+  --bg-main: #f8f9fa;
+  --bg-sidebar: #ffffff;
+  --bg-card: #ffffff;
+  --bg-elevated: #f4f4f5;
+  --text-main: #18181b;
+  --text-muted: #71717a;
+  --text-faint: #a1a1aa;
+  --border-main: #e4e4e7;
+  --border-subtle: #f4f4f5;
+}
+
+body {
+  @apply bg-bg-main text-text-main font-sans antialiased transition-colors duration-200;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-main);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-main) transparent;
+}
+
+.scrollbar-hide, .no-scrollbar {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}
+
+.scrollbar-hide::-webkit-scrollbar, .no-scrollbar::-webkit-scrollbar {
+  display: none !important;
+}
+
+.allow-scrollbar, .allow-scrollbar * {
+  scrollbar-width: thin !important;
+}
+
+.allow-scrollbar::-webkit-scrollbar, .allow-scrollbar *::-webkit-scrollbar {
+  display: block !important;
+  width: 6px;
+}
+
+/* Focus ring */
+*:focus-visible {
+  outline: 2px solid var(--color-amber-primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Selection */
+::selection {
+  background: rgba(245, 158, 11, 0.25);
+  color: var(--text-main);
+}
