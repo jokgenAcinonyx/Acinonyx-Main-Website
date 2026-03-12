@@ -21,7 +21,6 @@ import {
   Image as ImageIcon,
   Wallet,
   Zap,
-  MessageSquare,
   TrendingUp,
   Package,
   ArrowRight,
@@ -38,14 +37,14 @@ import TraitsPage from './components/TraitsPage';
 import AccountPage from './components/AccountPage';
 import MarketplacePage from './components/MarketplacePage';
 import OrdersPage from './components/OrdersPage';
-import WithdrawalPage from './components/WithdrawalPage';
 import AdminPage from './components/AdminPage';
+import { useAlert } from './components/AlertContext';
 import AdminSetupPage from './components/AdminSetupPage';
 import KijoVerificationPage from './components/KijoVerificationPage';
-import ChatMinox from './components/ChatMinox';
+import KijoStorePage from './components/KijoStorePage';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
 
-import { KIJO_TRAITS, JOKIES_TRAITS } from './constants';
+import { JOKIES_TRAITS } from './constants';
 import { 
   NavItem, 
   StatCard, 
@@ -101,13 +100,15 @@ interface GroupedSessions {
 }
 
 export default function App() {
+  const { showAlert } = useAlert();
   const [user, setUser] = useState<User | null>(null);
   const [stats, setStats] = useState<UserStats | null>(null);
   const [sessions, setSessions] = useState<GroupedSessions>({ upcoming: [], ongoing: [], history: [] });
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [loading, setLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
-  const [view, setView] = useState<'dashboard' | 'etalase' | 'notifications' | 'traits' | 'account' | 'marketplace' | 'orders' | 'withdrawal'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'etalase' | 'notifications' | 'traits' | 'account' | 'marketplace' | 'orders' | 'kijo-store'>('dashboard');
+  const [selectedKijoId, setSelectedKijoId] = useState<number | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [mode, setMode] = useState<'kijo' | 'jokies'>('jokies');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -117,7 +118,6 @@ export default function App() {
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showVerification, setShowVerification] = useState(false);
   const [ratingJokiesSession, setRatingJokiesSession] = useState<any>(null);
-  const [isChatOpen, setIsChatOpen] = useState(false);
   const [selectedJokiesTags, setSelectedJokiesTags] = useState<string[]>([]);
   const [isProcessingOrder, setIsProcessingOrder] = useState(false);
   const [orderActionModal, setOrderActionModal] = useState<{ type: 'finish' | 'cancel' | 'start', order: any } | null>(null);
@@ -542,13 +542,7 @@ export default function App() {
                     active={view === 'orders'} 
                     onClick={() => handleNavClick('orders')}
                   />
-                  <NavItem 
-                    icon={<Wallet size={18} />} 
-                    label="Penarikan Dana" 
-                    active={view === 'withdrawal'} 
-                    onClick={() => handleNavClick('withdrawal')}
-                  />
-                  <NavItem 
+                  <NavItem
                     icon={<Bell size={18} />} 
                     label="Notifikasi" 
                     active={view === 'notifications'} 
@@ -589,11 +583,11 @@ export default function App() {
               </button>
 
               {/* Mode Switcher */}
-              <button 
+              <button
                 onClick={toggleMode}
                 className={`w-full flex items-center gap-3 px-4 py-4 rounded-xl font-bold hover:scale-[1.02] transition-all shadow-lg ${
-                  mode === 'kijo' 
-                    ? 'bg-blue-500 text-white shadow-blue-500/20 border border-blue-400/30' 
+                  mode === 'kijo'
+                    ? 'bg-orange-primary/10 text-orange-primary shadow-orange-primary/10 border border-orange-primary/30 hover:bg-orange-primary hover:text-black'
                     : 'bg-orange-primary text-black shadow-orange-primary/10'
                 }`}
               >
@@ -692,21 +686,6 @@ export default function App() {
 
       {/* Main Content */}
       <main className={`flex-1 min-h-screen relative z-10 overflow-x-hidden transition-all duration-300 ${isMobile ? 'pb-20' : (mode === 'jokies' ? 'lg:ml-0' : 'xl:ml-64 lg:ml-0')}`}>
-        {/* Floating Chat Button */}
-        <button 
-          onClick={() => setIsChatOpen(true)}
-          className="fixed bottom-24 right-6 z-[50] w-14 h-14 bg-orange-primary text-black rounded-2xl shadow-xl shadow-orange-primary/20 flex items-center justify-center hover:scale-110 transition-all group"
-        >
-          <MessageSquare size={24} className="group-hover:rotate-12 transition-transform" />
-          <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 border-2 border-bg-main rounded-full animate-pulse" />
-        </button>
-
-        <ChatMinox 
-          user={user} 
-          isOpen={isChatOpen} 
-          onClose={() => setIsChatOpen(false)} 
-        />
-
         {/* Mobile/Desktop Header for Jokies (Sticky) */}
         <header className={`flex ${mode === 'jokies' ? 'justify-between' : 'xl:hidden'} sticky top-0 left-0 right-0 h-16 bg-bg-sidebar border-b border-border-main z-[50] items-center px-4 sm:px-6 shadow-sm`}>
           <div className="flex items-center gap-4 md:gap-8 flex-1">
@@ -813,15 +792,15 @@ export default function App() {
                 value={
                   stats?.manual_status === 'offline' 
                     ? 'Sedang Istirahat' 
-                    : (stats?.active_orders >= (stats?.max_slots || 3)) 
-                      ? 'Sibuk (Slot Penuh)' 
+                    : ((stats?.active_orders ?? 0) >= (stats?.max_slots || 3))
+                      ? 'Sibuk (Slot Penuh)'
                       : 'Tersedia'
-                } 
+                }
                 status={
-                  stats?.manual_status === 'offline' 
-                    ? 'busy' 
-                    : (stats?.active_orders >= (stats?.max_slots || 3)) 
-                      ? 'busy' 
+                  stats?.manual_status === 'offline'
+                    ? 'busy'
+                    : ((stats?.active_orders ?? 0) >= (stats?.max_slots || 3))
+                      ? 'busy'
                       : 'active'
                 } 
               />
@@ -881,10 +860,10 @@ export default function App() {
                       onClick={() => setSelectedSession(session)}
                       details={{
                         id: session.id,
-                        kijoId: user?.id,
-                        jokiesId: session.jokies_id,
-                        duration: session.duration,
-                        startTime: session.started_at
+                        kijoId: user?.id ?? 0,
+                        jokiesId: session.jokies_id ?? 0,
+                        duration: session.duration ?? 0,
+                        startTime: session.started_at ?? ''
                       }}
                       onFinish={() => setOrderActionModal({ type: 'finish', order: session })}
                       onCancel={() => setOrderActionModal({ type: 'cancel', order: session })}
@@ -1206,31 +1185,20 @@ export default function App() {
           // Trigger the fetchData function defined in the useEffect or make it accessible
       // Dispatch event to refresh stats globally
       try {
-        const event = document.createEvent('CustomEvent');
-        event.initCustomEvent('refreshStats', true, true, {});
-        window.dispatchEvent(event);
+        window.dispatchEvent(new CustomEvent('refreshStats'));
       } catch (e) {
         console.warn('Failed to dispatch refreshStats event:', e);
       }
         }} globalGames={globalGames} />}
 
-        {view === 'marketplace' && <MarketplacePage user={user} setView={setView} onOrderSuccess={() => setView('orders')} systemStatus={systemStatus} />}
-        
-        {view === 'orders' && <OrdersPage user={user} onWithdraw={() => setView('withdrawal')} globalGames={globalGames} />}
+        {view === 'marketplace' && <MarketplacePage user={user} setView={setView} onOrderSuccess={() => setView('orders')} systemStatus={systemStatus} onOpenKijo={(id) => { setSelectedKijoId(id); setView('kijo-store'); }} />}
 
-        {view === 'withdrawal' && (
-          <WithdrawalPage 
-            user={mode === 'kijo' ? (stats || user) : user} 
-            mode={mode}
-            onBack={() => setView(mode === 'kijo' ? 'dashboard' : 'orders')} 
-            onSuccess={() => {
-              setView(mode === 'kijo' ? 'dashboard' : 'orders');
-              fetchData();
-            }} 
-          />
-        )}
+        {view === 'kijo-store' && selectedKijoId !== null && <KijoStorePage user={user} kijoId={selectedKijoId} onBack={() => setView('marketplace')} onOrderSuccess={() => { setSelectedKijoId(null); setView('orders'); }} systemStatus={systemStatus} />}
         
-        {view === 'notifications' && <NotificationPage user={user} />}
+        {view === 'orders' && <OrdersPage user={user} globalGames={globalGames} />}
+
+
+        {view === 'notifications' && <NotificationPage user={user} onBadgeUpdate={(count) => setUnreadNotifications(count)} />}
 
         {view === 'traits' && <TraitsPage user={user} mode={mode} />}
 
@@ -1314,7 +1282,7 @@ export default function App() {
                             const file = (e.target as HTMLInputElement).files?.[0];
                             if (!file) return;
                             if (file.size > 2 * 1024 * 1024) {
-                              alert('Ukuran file maksimal 2MB');
+                              showAlert('Ukuran file maksimal 2MB', 'warning');
                               return;
                             }
                             const reader = new FileReader();
@@ -1599,7 +1567,7 @@ export default function App() {
                     if (res.ok) {
                       setRatingJokiesSession(null);
                       setSelectedJokiesTags([]);
-                      alert('Badge berhasil diberikan!');
+                      showAlert('Badge berhasil diberikan!', 'success');
                     }
                   }}
                   className="w-full bg-orange-primary text-black font-bold py-4 rounded-xl text-xs uppercase tracking-widest shadow-lg shadow-orange-primary/20"
@@ -1611,7 +1579,7 @@ export default function App() {
           )}
         </AnimatePresence>
         
-        {view !== 'dashboard' && view !== 'etalase' && view !== 'notifications' && view !== 'traits' && view !== 'account' && view !== 'marketplace' && view !== 'orders' && view !== 'withdrawal' && (
+        {view !== 'dashboard' && view !== 'etalase' && view !== 'notifications' && view !== 'traits' && view !== 'account' && view !== 'marketplace' && view !== 'orders' && (
           <div className="flex flex-col items-center justify-center h-[60vh] text-center">
             <div className="w-20 h-20 bg-bg-sidebar rounded-full flex items-center justify-center mb-6 border border-border-main">
               <Settings className="text-text-muted" size={32} />

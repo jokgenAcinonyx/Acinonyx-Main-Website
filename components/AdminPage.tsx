@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { io as socketIO } from 'socket.io-client';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   LayoutDashboard, 
@@ -69,6 +70,7 @@ import {
   Bar
 } from 'recharts';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
+import { useAlert } from './AlertContext';
 
 interface AdminPageProps {
   user: any;
@@ -81,6 +83,7 @@ interface AdminPageProps {
 type AdminView = 'dashboard' | 'users' | 'orders' | 'financials' | 'security' | 'notifications' | 'announcements' | 'games' | 'maintenance' | 'audit' | 'profile';
 
 export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGames = [] }: AdminPageProps) {
+  const { showAlert } = useAlert();
   const [view, setView] = useState<AdminView>('dashboard');
   const [adminUser, setAdminUser] = useState(user);
   const [stats, setStats] = useState<any>(null);
@@ -98,6 +101,7 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [selectedUserDetail, setSelectedUserDetail] = useState<any>(null);
   const [lastUpdated, setLastUpdated] = useState(new Date());
+  const [isLive, setIsLive] = useState(false);
 
   const fetchData = async () => {
     setRefreshing(true);
@@ -143,14 +147,25 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
 
   useEffect(() => {
     fetchData();
-    
+
     const handleRefresh = () => fetchData();
     window.addEventListener('refreshAdminData', handleRefresh);
-    
-    const interval = setInterval(fetchData, 60000); // Auto refresh every minute
+
+    const interval = setInterval(fetchData, 30000); // Auto refresh every 30s (fallback)
+
+    // Socket.io for real-time admin updates
+    const socket = socketIO({ path: '/socket.io', transports: ['websocket', 'polling'] });
+    socket.on('connect', () => setIsLive(true));
+    socket.on('disconnect', () => setIsLive(false));
+    socket.on('connect_error', () => setIsLive(false));
+    socket.emit('join-admin-room');
+    socket.on('admin-refresh', () => fetchData());
+
     return () => {
       clearInterval(interval);
       window.removeEventListener('refreshAdminData', handleRefresh);
+      socket.emit('leave-admin-room');
+      socket.disconnect();
     };
   }, []);
 
@@ -164,7 +179,7 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
       });
       if (res.ok) fetchData();
     } catch (error) {
-      alert('Gagal mengubah status user');
+      showAlert('Gagal mengubah status user', 'error');
     }
   };
 
@@ -173,7 +188,7 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
       const res = await fetchWithAuth(`/api/admin/users/${userId}/verify`, { method: 'POST' });
       if (res.ok) fetchData();
     } catch (error) {
-      alert('Gagal memverifikasi user');
+      showAlert('Gagal memverifikasi user', 'error');
     }
   };
 
@@ -183,7 +198,55 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
       const res = await fetchWithAuth(`/api/admin/sessions/${sessionId}/complete`, { method: 'POST' });
       if (res.ok) fetchData();
     } catch (error) {
-      alert('Gagal menyelesaikan pesanan');
+      showAlert('Gagal menyelesaikan pesanan', 'error');
+    }
+  };
+
+  const handleForceStart = async (sessionId: number) => {
+    if (!confirm('Paksa mulai sesi ini sekarang? Jadwal akan diabaikan.')) return;
+    try {
+      const res = await fetchWithAuth(`/api/admin/sessions/${sessionId}/force-start`, { method: 'POST' });
+      if (res.ok) fetchData();
+      else showAlert('Gagal memulai sesi', 'error');
+    } catch (error) {
+      showAlert('Gagal memulai sesi', 'error');
+    }
+  };
+
+  const handleForceCancel = async (sessionId: number) => {
+    const refund = confirm('Batalkan pesanan ini?\n\nKlik OK untuk BATALKAN + REFUND ke Jokies.\nKlik Cancel untuk BATALKAN tanpa refund.');
+    try {
+      const res = await fetchWithAuth(`/api/admin/sessions/${sessionId}/force-cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refund })
+      });
+      if (res.ok) fetchData();
+      else showAlert('Gagal membatalkan sesi', 'error');
+    } catch (error) {
+      showAlert('Gagal membatalkan sesi', 'error');
+    }
+  };
+
+  const handleApproveCancel = async (sessionId: number) => {
+    if (!confirm('Setujui pembatalan pesanan ini? Dana akan dikembalikan ke Jokies.')) return;
+    try {
+      const res = await fetchWithAuth(`/api/admin/sessions/${sessionId}/approve-cancel`, { method: 'POST' });
+      if (res.ok) fetchData();
+      else showAlert('Gagal menyetujui pembatalan', 'error');
+    } catch (error) {
+      showAlert('Gagal menyetujui pembatalan', 'error');
+    }
+  };
+
+  const handleRejectCancel = async (sessionId: number) => {
+    if (!confirm('Tolak pembatalan ini? Sesi akan dilanjutkan.')) return;
+    try {
+      const res = await fetchWithAuth(`/api/admin/sessions/${sessionId}/reject-cancel`, { method: 'POST' });
+      if (res.ok) fetchData();
+      else showAlert('Gagal menolak pembatalan', 'error');
+    } catch (error) {
+      showAlert('Gagal menolak pembatalan', 'error');
     }
   };
 
@@ -352,8 +415,9 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
                 {view === 'games' && 'Games'}
                 {view === 'maintenance' && 'Maintenance'}
               </h2>
-              <p className="text-text-muted text-[11px] md:text-xs font-bold uppercase tracking-widest mt-0.5 md:mt-1 hidden md:block">
-                Data diperbarui: {lastUpdated.toLocaleTimeString('id-ID')}
+              <p className="text-text-muted text-[11px] md:text-xs font-bold uppercase tracking-widest mt-0.5 md:mt-1 hidden md:flex md:items-center md:gap-2">
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${isLive ? 'bg-green-500 animate-pulse' : 'bg-text-muted'}`} />
+                {isLive ? 'Live' : 'Polling'} · Data diperbarui: {lastUpdated.toLocaleTimeString('id-ID')}
               </p>
             </div>
           </div>
@@ -403,7 +467,7 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
             >
               {view === 'dashboard' && <DashboardView stats={stats} onRefresh={fetchData} games={games} />}
               {view === 'users' && <UsersView data={usersData} onSuspend={handleSuspend} onVerify={handleVerify} onDetail={setSelectedUserDetail} />}
-              {view === 'orders' && <OrdersView data={sessionsData} onForceComplete={handleForceComplete} globalGames={globalGames} />}
+              {view === 'orders' && <OrdersView data={sessionsData} onForceComplete={handleForceComplete} onForceStart={handleForceStart} onForceCancel={handleForceCancel} onApproveCancel={handleApproveCancel} onRejectCancel={handleRejectCancel} globalGames={globalGames} />}
               {view === 'financials' && <FinancialsView data={financials} withdrawals={withdrawals} onRefresh={fetchData} adminId={user.id} />}
               {view === 'security' && <SecurityView data={securityData} sessionsData={sessionsData} />}
               {view === 'notifications' && <AdminNotificationsView notifications={adminNotifications} onRefresh={fetchData} />}
@@ -526,6 +590,7 @@ function BottomNavLink({ active, onClick, icon, label }: { active: boolean, onCl
 // --- SUB-VIEWS ---
 
 function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () => void, games: any[] }) {
+  const { showAlert } = useAlert();
   const [isEditingFee, setIsEditingFee] = useState(false);
   const [newFee, setNewFee] = useState(stats?.adminFee || 10);
   const [saving, setSaving] = useState(false);
@@ -545,7 +610,7 @@ function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () 
         onRefresh();
       }
     } catch (error) {
-      alert('Gagal menyimpan biaya admin');
+      showAlert('Gagal menyimpan biaya admin', 'error');
     } finally {
       setSaving(false);
     }
@@ -972,7 +1037,7 @@ function UsersView({ data, onSuspend, onVerify, onDetail }: { data: any, onSuspe
   );
 }
 
-function OrdersView({ data, onForceComplete, globalGames }: { data: any, onForceComplete: any, globalGames: any[] }) {
+function OrdersView({ data, onForceComplete, onForceStart, onForceCancel, onApproveCancel, onRejectCancel, globalGames }: { data: any, onForceComplete: any, onForceStart: any, onForceCancel: any, onApproveCancel: any, onRejectCancel: any, globalGames: any[] }) {
   const [activeTab, setActiveTab] = useState<'upcoming' | 'ongoing' | 'disputes' | 'history'>('ongoing');
   const [sortBy, setSortBy] = useState<'date' | 'rank'>('date');
 
@@ -1038,13 +1103,13 @@ function OrdersView({ data, onForceComplete, globalGames }: { data: any, onForce
 
       <div className="grid grid-cols-1 gap-6">
         {activeTab === 'ongoing' && sortOrders(data.ongoing).map((s: any) => (
-          <OrderMonitorCard key={s.id} session={s} onForceComplete={onForceComplete} />
+          <OrderMonitorCard key={s.id} session={s} onForceComplete={onForceComplete} onForceCancel={onForceCancel} />
         ))}
         {activeTab === 'disputes' && data.disputes.map((s: any) => (
-          <DisputeCard key={s.id} session={s} />
+          <DisputeCard key={s.id} session={s} onApproveCancel={onApproveCancel} onRejectCancel={onRejectCancel} />
         ))}
         {activeTab === 'upcoming' && sortOrders(data.upcoming).map((s: any) => (
-          <OrderMonitorCard key={s.id} session={s} />
+          <OrderMonitorCard key={s.id} session={s} onForceStart={onForceStart} onForceCancel={onForceCancel} />
         ))}
         {activeTab === 'history' && sortOrders(data.history).map((s: any) => (
           <OrderMonitorCard key={s.id} session={s} isHistory />
@@ -1054,11 +1119,11 @@ function OrdersView({ data, onForceComplete, globalGames }: { data: any, onForce
   );
 }
 
-function OrderMonitorCard({ session, onForceComplete, isHistory }: { session: any, onForceComplete?: any, isHistory?: boolean, key?: any }) {
+function OrderMonitorCard({ session, onForceComplete, onForceStart, onForceCancel, isHistory }: { session: any, onForceComplete?: any, onForceStart?: any, onForceCancel?: any, isHistory?: boolean, key?: any }) {
   const scheduledDate = new Date(session.scheduled_at);
   const now = new Date();
   const diffDays = Math.floor((now.getTime() - scheduledDate.getTime()) / (1000 * 60 * 60 * 24));
-  
+
   return (
     <div className="bg-bg-sidebar border border-border-main rounded-2xl md:rounded-2xl p-4 md:p-8 shadow-sm group hover:border-orange-primary/20 transition-all">
       <div className="flex flex-col lg:flex-row gap-4 md:gap-8 items-start lg:items-center">
@@ -1071,12 +1136,13 @@ function OrderMonitorCard({ session, onForceComplete, isHistory }: { session: an
             <span className={`px-2 md:px-3 py-0.5 md:py-1 rounded-md md:rounded-lg text-[11px] md:text-[11px] font-semibold uppercase tracking-wide ${
               session.status === 'ongoing' ? 'bg-blue-500/10 text-blue-500 border border-blue-500/20' :
               session.status === 'completed' ? 'bg-green-500/10 text-green-500 border border-green-500/20' :
+              session.status === 'cancelled' ? 'bg-red-500/10 text-red-500 border border-red-500/20' :
               'bg-orange-primary/10 text-orange-primary border border-orange-primary/20'
             }`}>
               {session.status}
             </span>
           </div>
-          
+
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6">
             <div>
               <p className="text-[11px] md:text-xs font-bold text-text-muted uppercase tracking-widest mb-0.5 md:mb-1">KIJO / JOKIES</p>
@@ -1087,8 +1153,8 @@ function OrderMonitorCard({ session, onForceComplete, isHistory }: { session: an
               <p className="text-xs md:text-xs font-bold">{scheduledDate.toLocaleDateString('id-ID')} - {scheduledDate.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</p>
             </div>
             <div>
-              <p className="text-[11px] md:text-xs font-bold text-text-muted uppercase tracking-widest mb-0.5 md:mb-1">Durasi</p>
-              <p className={`text-xs md:text-xs font-bold ${diffDays >= 7 ? 'text-red-500' : 'text-text-main'}`}>{diffDays} Hari</p>
+              <p className="text-[11px] md:text-xs font-bold text-text-muted uppercase tracking-widest mb-0.5 md:mb-1">Sejak Jadwal</p>
+              <p className={`text-xs md:text-xs font-bold ${diffDays >= 7 ? 'text-red-500' : 'text-text-main'}`}>{diffDays >= 0 ? `${diffDays}h yang lalu` : `${Math.abs(diffDays)}h lagi`}</p>
             </div>
             <div>
               <p className="text-[11px] md:text-xs font-bold text-text-muted uppercase tracking-widest mb-0.5 md:mb-1">Total</p>
@@ -1102,38 +1168,53 @@ function OrderMonitorCard({ session, onForceComplete, isHistory }: { session: an
             )}
             {session.rank_end && (
               <div>
-                <p className="text-[11px] md:text-xs font-bold text-text-muted uppercase tracking-widest mb-0.5 md:mb-1">Rank Akhir</p>
+                <p className="text-[11px] md:text-xs font-bold text-text-muted uppercase tracking-widest mb-0.5 md:mb-1">Target Rank</p>
                 <p className="text-xs md:text-xs font-bold">{session.rank_end}</p>
               </div>
             )}
           </div>
         </div>
 
-        <div className="flex gap-2 md:gap-3 shrink-0 w-full lg:w-auto mt-2 lg:mt-0">
-          {session.status === 'ongoing' && diffDays >= 7 && (
-            <button 
-              onClick={() => onForceComplete(session.id)}
-              className="flex-1 lg:flex-none px-4 md:px-6 py-2.5 md:py-4 rounded-xl md:rounded-2xl bg-orange-primary text-black font-bold text-xs md:text-xs uppercase tracking-widest shadow-lg shadow-orange-primary/20 hover:scale-105 transition-all"
-            >
-              Force Complete
-            </button>
-          )}
-          <button className="flex-1 lg:flex-none p-2.5 md:p-4 rounded-xl md:rounded-2xl bg-bg-main border border-border-main text-text-muted hover:text-orange-primary transition-all flex items-center justify-center">
-            <Eye size={20} />
-          </button>
-        </div>
+        {!isHistory && (
+          <div className="flex flex-wrap gap-2 md:gap-3 shrink-0 w-full lg:w-auto mt-2 lg:mt-0">
+            {session.status === 'upcoming' && onForceStart && (
+              <button
+                onClick={() => onForceStart(session.id)}
+                className="flex-1 lg:flex-none px-3 md:px-5 py-2.5 md:py-3 rounded-xl bg-blue-500 text-white font-bold text-xs uppercase tracking-widest shadow-lg shadow-blue-500/20 hover:scale-105 transition-all"
+              >
+                Force Start
+              </button>
+            )}
+            {session.status === 'ongoing' && onForceComplete && (
+              <button
+                onClick={() => onForceComplete(session.id)}
+                className="flex-1 lg:flex-none px-3 md:px-5 py-2.5 md:py-3 rounded-xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest shadow-lg shadow-orange-primary/20 hover:scale-105 transition-all"
+              >
+                Force Complete
+              </button>
+            )}
+            {['upcoming', 'ongoing'].includes(session.status) && onForceCancel && (
+              <button
+                onClick={() => onForceCancel(session.id)}
+                className="flex-1 lg:flex-none px-3 md:px-5 py-2.5 md:py-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-500 font-bold text-xs uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all"
+              >
+                Force Cancel
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function DisputeCard({ session }: { session: any, key?: any }) {
+function DisputeCard({ session, onApproveCancel, onRejectCancel }: { session: any, onApproveCancel?: any, onRejectCancel?: any, key?: any }) {
   return (
     <div className="bg-bg-sidebar border border-red-500/20 rounded-2xl p-8 shadow-sm relative overflow-hidden">
       <div className="absolute top-0 right-0 p-6 opacity-5">
         <AlertTriangle size={80} className="text-red-500" />
       </div>
-      
+
       <div className="flex flex-col lg:flex-row gap-10">
         <div className="flex-1 space-y-6">
           <div className="flex items-center gap-3">
@@ -1143,21 +1224,28 @@ function DisputeCard({ session }: { session: any, key?: any }) {
             <div>
               <h4 className="text-lg font-bold uppercase tracking-tight">Pengajuan Pembatalan #{session.id}</h4>
               <p className="text-xs text-text-muted font-bold uppercase tracking-widest">Dibatalkan pada: {session.cancelled_at ? new Date(session.cancelled_at).toLocaleString('id-ID') : '-'}</p>
+              <p className="text-xs text-text-muted font-bold uppercase tracking-widest mt-0.5">{session.game_title} · {session.kijo_nickname || 'KIJO'} → {session.jokies_nickname || 'JOKIES'} · Rp {session.total_price?.toLocaleString()}</p>
             </div>
           </div>
 
           <div className="bg-bg-main/50 rounded-2xl p-6 border border-border-main">
             <p className="text-xs font-bold text-text-muted uppercase tracking-widest mb-2">Alasan Pembatalan:</p>
-            <p className="text-sm font-medium italic text-text-main leading-relaxed">"{session.cancellation_reason}"</p>
+            <p className="text-sm font-medium italic text-text-main leading-relaxed">"{session.cancellation_reason || 'Tidak ada alasan.'}"</p>
           </div>
         </div>
 
         <div className="w-full lg:w-72 space-y-4">
-          <button className="w-full py-4 rounded-2xl bg-green-500 text-black font-bold text-xs uppercase tracking-widest shadow-lg shadow-green-500/20 hover:scale-[1.02] transition-all">
-            Approve Cancel
+          <button
+            onClick={() => onApproveCancel?.(session.id)}
+            className="w-full py-4 rounded-2xl bg-green-500 text-black font-bold text-xs uppercase tracking-widest shadow-lg shadow-green-500/20 hover:scale-[1.02] transition-all"
+          >
+            Approve Cancel + Refund
           </button>
-          <button className="w-full py-4 rounded-2xl bg-bg-main border border-border-main text-text-main font-bold text-xs uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all">
-            Reject & Continue
+          <button
+            onClick={() => onRejectCancel?.(session.id)}
+            className="w-full py-4 rounded-2xl bg-bg-main border border-border-main text-text-main font-bold text-xs uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all"
+          >
+            Reject &amp; Continue Session
           </button>
         </div>
       </div>
@@ -1166,6 +1254,7 @@ function DisputeCard({ session }: { session: any, key?: any }) {
 }
 
 function SecurityView({ data, sessionsData }: { data: any, sessionsData: any }) {
+  const { showAlert } = useAlert();
   const [activeTab, setActiveTab] = useState<'otps' | 'screenshots' | 'chats' | 'kijo_apps'>('otps');
   const [selectedChat, setSelectedChat] = useState<any>(null);
   const [reviewingApp, setReviewingApp] = useState<any>(null);
@@ -1193,7 +1282,7 @@ function SecurityView({ data, sessionsData }: { data: any, sessionsData: any }) 
         }
       }
     } catch (error) {
-      alert('Gagal memproses verifikasi');
+      showAlert('Gagal memproses verifikasi', 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -1614,6 +1703,7 @@ function AdminChatWindow({ session, onClose, adminId }: { session: any, onClose:
 }
 
 function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: () => void }) {
+  const { showAlert } = useAlert();
   const [newGameName, setNewGameName] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [editingGame, setEditingGame] = useState<any>(null);
@@ -1697,7 +1787,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
         onRefresh();
       }
     } catch (error) {
-      alert('Gagal menerapkan template');
+      showAlert('Gagal menerapkan template', 'error');
     } finally {
       setIsAdding(false);
     }
@@ -1726,10 +1816,10 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
         onRefresh();
       } else {
         const data = await res.json();
-        alert(data.message || 'Gagal menambahkan game');
+        showAlert(data.message || 'Gagal menambahkan game', 'error');
       }
     } catch (error) {
-      alert('Terjadi kesalahan');
+      showAlert('Terjadi kesalahan', 'error');
     } finally {
       setIsAdding(false);
     }
@@ -1748,7 +1838,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
         onRefresh();
       }
     } catch (error) {
-      alert('Gagal memperbarui game');
+      showAlert('Gagal memperbarui game', 'error');
     }
   };
 
@@ -1760,10 +1850,10 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
       if (res.ok) {
         onRefresh();
       } else {
-        alert(data.message || 'Gagal menghapus game');
+        showAlert(data.message || 'Gagal menghapus game', 'error');
       }
     } catch (error) {
-      alert('Gagal menghapus game');
+      showAlert('Gagal menghapus game', 'error');
     }
   };
 
@@ -2155,6 +2245,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
 }
 
 function FinancialsView({ data, withdrawals, onRefresh, adminId }: { data: any, withdrawals: any[], onRefresh: () => void, adminId: number }) {
+  const { showAlert } = useAlert();
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('');
 
@@ -2170,7 +2261,7 @@ function FinancialsView({ data, withdrawals, onRefresh, adminId }: { data: any, 
       });
       if (res.ok) onRefresh();
     } catch (e) {
-      alert('Gagal menyetujui penarikan');
+      showAlert('Gagal menyetujui penarikan', 'error');
     }
   };
 
@@ -2188,7 +2279,7 @@ function FinancialsView({ data, withdrawals, onRefresh, adminId }: { data: any, 
         onRefresh();
       }
     } catch (e) {
-      alert('Gagal menolak penarikan');
+      showAlert('Gagal menolak penarikan', 'error');
     }
   };
 
@@ -2305,6 +2396,7 @@ function FinancialsView({ data, withdrawals, onRefresh, adminId }: { data: any, 
 }
 
 function AnnouncementsView({ data, onRefresh, adminId }: { data: any[], onRefresh: () => void, adminId: number }) {
+  const { showAlert } = useAlert();
   const [isAdding, setIsAdding] = useState(false);
   const [formData, setFormData] = useState({ title: '', content: '', type: 'info', target: 'all' });
 
@@ -2321,7 +2413,7 @@ function AnnouncementsView({ data, onRefresh, adminId }: { data: any[], onRefres
         onRefresh();
       }
     } catch (e) {
-      alert('Gagal membuat pengumuman');
+      showAlert('Gagal membuat pengumuman', 'error');
     }
   };
 
@@ -2335,7 +2427,7 @@ function AnnouncementsView({ data, onRefresh, adminId }: { data: any[], onRefres
       });
       if (res.ok) onRefresh();
     } catch (e) {
-      alert('Gagal menghapus');
+      showAlert('Gagal menghapus', 'error');
     }
   };
 
@@ -2348,7 +2440,7 @@ function AnnouncementsView({ data, onRefresh, adminId }: { data: any[], onRefres
       });
       if (res.ok) onRefresh();
     } catch (e) {
-      alert('Gagal mengubah status');
+      showAlert('Gagal mengubah status', 'error');
     }
   };
 
@@ -2487,8 +2579,42 @@ function AuditLogsView({ data }: { data: any[] }) {
 }
 
 function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClose: () => void, onRefresh: () => void }) {
+  const { showAlert } = useAlert();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [isTopupOpen, setIsTopupOpen] = useState(false);
+  const [topupAmount, setTopupAmount] = useState('');
+  const [topupLoading, setTopupLoading] = useState(false);
+
+  const refreshModal = async () => {
+    try {
+      const res = await fetchWithAuth(`/api/admin/users/${userId}/full-details`);
+      if (res.ok) setData(await res.json());
+    } catch (e) { /* silent */ }
+  };
+
+  const handleTopup = async (walletType: 'jokies' | 'kijo') => {
+    const amount = Number(topupAmount.replace(/[^0-9]/g, ''));
+    if (!amount || amount <= 0) return;
+    setTopupLoading(true);
+    try {
+      const res = await fetchWithAuth(`/api/admin/users/${userId}/topup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount, wallet_type: walletType })
+      });
+      if (res.ok) {
+        setTopupAmount('');
+        setIsTopupOpen(false);
+        await refreshModal();
+        onRefresh();
+      } else {
+        showAlert('Gagal topup saldo', 'error');
+      }
+    } finally {
+      setTopupLoading(false);
+    }
+  };
 
   useEffect(() => {
     const fetchDetail = async () => {
@@ -2557,6 +2683,46 @@ function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClo
               <p className="text-xs font-bold text-text-muted uppercase tracking-widest mb-2">Wallet / Balance</p>
               <h4 className="text-xl font-bold text-orange-primary">Rp {(u.role === 'kijo' ? (u.balance_active ?? 0) : (u.wallet_jokies ?? 0)).toLocaleString()}</h4>
               {u.role === 'kijo' && <p className="text-[11px] text-text-muted font-bold uppercase tracking-widest mt-1">Held: Rp {(u.balance_held ?? 0).toLocaleString()}</p>}
+              <button
+                onClick={() => setIsTopupOpen(v => !v)}
+                className="mt-3 w-full py-2 rounded-xl bg-orange-primary/10 border border-orange-primary/20 text-orange-primary text-xs font-bold uppercase tracking-widest hover:bg-orange-primary hover:text-black transition-all"
+              >
+                + Topup Test Balance
+              </button>
+              {isTopupOpen && (
+                <div className="mt-3 space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <div className="flex gap-1.5 flex-wrap">
+                    {[50000, 100000, 500000, 1000000].map(v => (
+                      <button key={v} onClick={() => setTopupAmount(String(v))}
+                        className={`px-2 py-1 rounded-lg text-[11px] font-bold border transition-all ${topupAmount === String(v) ? 'bg-orange-primary text-black border-orange-primary' : 'border-border-main text-text-muted hover:text-text-main'}`}>
+                        {v >= 1000000 ? `${v / 1000000}jt` : `${v / 1000}k`}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    type="number"
+                    min="1000"
+                    placeholder="Jumlah custom..."
+                    value={topupAmount}
+                    onChange={e => setTopupAmount(e.target.value)}
+                    className="w-full bg-bg-sidebar border border-border-main rounded-lg py-2 px-3 text-xs font-bold text-text-main focus:outline-none focus:border-orange-primary"
+                  />
+                  <div className="flex gap-2">
+                    {u.role !== 'kijo' && (
+                      <button onClick={() => handleTopup('jokies')} disabled={topupLoading || !topupAmount}
+                        className="flex-1 py-2 rounded-lg bg-blue-500 text-white text-[11px] font-bold uppercase tracking-widest hover:bg-blue-400 disabled:opacity-50 transition-all">
+                        → Wallet Jokies
+                      </button>
+                    )}
+                    {u.role === 'kijo' && (
+                      <button onClick={() => handleTopup('kijo')} disabled={topupLoading || !topupAmount}
+                        className="flex-1 py-2 rounded-lg bg-orange-primary text-black text-[11px] font-bold uppercase tracking-widest hover:bg-orange-primary/80 disabled:opacity-50 transition-all">
+                        → Balance Kijo
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="p-6 rounded-2xl bg-bg-main border border-border-main">
               <p className="text-xs font-bold text-text-muted uppercase tracking-widest mb-2">Contact Info</p>
@@ -2575,6 +2741,54 @@ function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClo
               </div>
             </div>
           </div>
+
+          {/* Linked Accounts */}
+          {(() => {
+            let socialLinks: Record<string, string> = {};
+            try {
+              if (u.social_links) {
+                socialLinks = typeof u.social_links === 'string' ? JSON.parse(u.social_links) : u.social_links;
+              }
+            } catch (e) {}
+            const hasLinks = Object.values(socialLinks).some(v => v);
+            if (!hasLinks) return null;
+            return (
+              <div className="mb-12">
+                <h4 className="text-lg font-bold uppercase tracking-tight mb-6 flex items-center gap-2">
+                  <ExternalLink size={20} className="text-orange-primary" /> Linked Accounts
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {socialLinks.discord && (
+                    <div className="p-4 rounded-2xl bg-bg-main border border-border-main flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-[#5865F2]/10 flex items-center justify-center text-[#5865F2] font-bold text-sm">DC</div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Discord</p>
+                        <p className="text-sm font-bold truncate">{socialLinks.discord}</p>
+                      </div>
+                    </div>
+                  )}
+                  {socialLinks.steam && (
+                    <div className="p-4 rounded-2xl bg-bg-main border border-border-main flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-gray-500/10 flex items-center justify-center text-gray-400 font-bold text-sm">ST</div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Steam</p>
+                        <p className="text-sm font-bold truncate">{socialLinks.steam}</p>
+                      </div>
+                    </div>
+                  )}
+                  {socialLinks.battlenet && (
+                    <div className="p-4 rounded-2xl bg-bg-main border border-border-main flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 font-bold text-sm">BN</div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Battle.net</p>
+                        <p className="text-sm font-bold truncate">{socialLinks.battlenet}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="space-y-12">
             <div>
@@ -2678,6 +2892,7 @@ function StarIcon({ size, className }: { size: number, className?: string }) {
 }
 
 function MaintenanceView({ onRefresh }: { onRefresh: () => void }) {
+  const { showAlert } = useAlert();
   const [schedules, setSchedules] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -2705,7 +2920,7 @@ function MaintenanceView({ onRefresh }: { onRefresh: () => void }) {
 
   const handleAddSchedule = async () => {
     if (!newSchedule.start_date || !newSchedule.end_date || !newSchedule.reason) {
-      alert('Mohon isi semua field');
+      showAlert('Mohon isi semua field', 'warning');
       return;
     }
     setSaving(true);
@@ -2722,7 +2937,7 @@ function MaintenanceView({ onRefresh }: { onRefresh: () => void }) {
         onRefresh();
       }
     } catch (error) {
-      alert('Gagal menambah jadwal maintenance');
+      showAlert('Gagal menambah jadwal maintenance', 'error');
     } finally {
       setSaving(false);
     }
@@ -2734,7 +2949,7 @@ function MaintenanceView({ onRefresh }: { onRefresh: () => void }) {
       const res = await fetchWithAuth(`/api/admin/maintenance/${id}`, { method: 'DELETE' });
       if (res.ok) fetchSchedules();
     } catch (error) {
-      alert('Gagal menghapus jadwal maintenance');
+      showAlert('Gagal menghapus jadwal maintenance', 'error');
     }
   };
 

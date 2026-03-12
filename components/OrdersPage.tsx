@@ -8,14 +8,16 @@ import { Package, Clock, ChevronRight, Gamepad2, Zap, XCircle, CheckCircle2, Mes
   ArrowLeft
 } from 'lucide-react';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
+import { useAlert } from './AlertContext';
+import OrderChat from './OrderChat';
 
 interface OrdersPageProps {
   user: any;
-  onWithdraw: () => void;
   globalGames: any[];
 }
 
-export default function OrdersPage({ user, onWithdraw, globalGames }: OrdersPageProps) {
+export default function OrdersPage({ user, globalGames }: OrdersPageProps) {
+  const { showAlert } = useAlert();
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
@@ -69,7 +71,7 @@ export default function OrdersPage({ user, onWithdraw, globalGames }: OrdersPage
   }, [user.id]);
 
   const handleCancelOrder = async () => {
-    if (!cancelReason) return alert('Mohon isi alasan pembatalan');
+    if (!cancelReason) { showAlert('Mohon isi alasan pembatalan', 'warning'); return; }
     setIsCancelling(true);
     try {
       const res = await fetchWithAuth('/api/orders/cancel', {
@@ -84,14 +86,14 @@ export default function OrdersPage({ user, onWithdraw, globalGames }: OrdersPage
       });
       const data = await res.json();
       if (res.ok) {
-        alert('Pesanan berhasil dibatalkan. Saldo telah dikembalikan ke Wallet Jokies.');
+        showAlert('Pesanan berhasil dibatalkan. Saldo telah dikembalikan ke Wallet Jokies.', 'success');
         setSelectedOrder(null);
         fetchOrders();
       } else {
-        alert(data.message || 'Gagal membatalkan pesanan');
+        showAlert(data.message || 'Gagal membatalkan pesanan', 'error');
       }
     } catch (error) {
-      alert('Gagal membatalkan pesanan');
+      showAlert('Gagal membatalkan pesanan', 'error');
     } finally {
       setIsCancelling(false);
     }
@@ -113,10 +115,10 @@ export default function OrdersPage({ user, onWithdraw, globalGames }: OrdersPage
         fetchOrders();
       } else {
         const data = await res.json();
-        alert(data.message || 'Gagal mengonfirmasi penyelesaian');
+        showAlert(data.message || 'Gagal mengonfirmasi penyelesaian', 'error');
       }
     } catch (error) {
-      alert('Gagal mengonfirmasi penyelesaian');
+      showAlert('Gagal mengonfirmasi penyelesaian', 'error');
     } finally {
       setIsCompleting(false);
     }
@@ -135,49 +137,20 @@ export default function OrdersPage({ user, onWithdraw, globalGames }: OrdersPage
         })
       });
       if (res.ok) {
-        alert('Terima kasih atas ulasan Anda!');
+        showAlert('Terima kasih atas ulasan Anda!', 'success');
         setShowRatingModal(false);
         setSelectedOrder(null);
         fetchOrders();
       }
     } catch (error) {
-      alert('Gagal mengirim ulasan');
-    }
-  };
-
-  const [sortBy, setSortBy] = useState<'date' | 'rank'>('date');
-
-  const getRankPriority = (gameTitle: string, rankName: string) => {
-    const game = globalGames.find(g => g.name === gameTitle);
-    if (!game || !game.ranks) return 0;
-    
-    const flatRanks: string[] = [];
-    game.ranks.forEach((r: any) => {
-      r.tiers.forEach((t: string) => {
-        flatRanks.push(`${r.title} - ${t}`);
-      });
-    });
-    
-    const index = flatRanks.indexOf(rankName);
-    return index === -1 ? 0 : index;
-  };
-
-  const sortOrders = (orders: any[]) => {
-    if (sortBy === 'date') {
-      return [...orders].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime());
-    } else {
-      return [...orders].sort((a, b) => {
-        const priorityA = getRankPriority(a.game_title, a.rank_start);
-        const priorityB = getRankPriority(b.game_title, b.rank_start);
-        return priorityB - priorityA;
-      });
+      showAlert('Gagal mengirim ulasan', 'error');
     }
   };
 
   const groupedOrders = {
-    upcoming: sortOrders(orders.filter(o => o.status === 'upcoming')),
-    ongoing: sortOrders(orders.filter(o => o.status === 'ongoing')),
-    history: sortOrders(orders.filter(o => o.status === 'completed' || o.status === 'cancelled'))
+    upcoming: [...orders.filter(o => o.status === 'upcoming')].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime()),
+    ongoing: [...orders.filter(o => o.status === 'ongoing')].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime()),
+    history: [...orders.filter(o => o.status === 'completed' || o.status === 'cancelled')].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime())
   };
 
   const renderDynamicData = (dataString: string) => {
@@ -313,17 +286,15 @@ export default function OrdersPage({ user, onWithdraw, globalGames }: OrdersPage
                     </p>
                     {selectedOrder.status !== 'cancelled' ? (
                       <>
-                        {selectedOrder.jokies_dynamic_data ? (
-                          renderDynamicData(selectedOrder.jokies_dynamic_data)
-                        ) : (
-                          <>
-                            <p className="text-xs text-text-muted">Nick: <span className="text-text-main font-bold">
-                              {selectedOrder.jokies_nickname || '-'}
-                            </span></p>
-                            <p className="text-xs text-text-muted">ID: <span className="text-text-main font-bold">
-                              {selectedOrder.jokies_game_id || '-'}
-                            </span></p>
-                          </>
+                        {selectedOrder.jokies_nickname && selectedOrder.jokies_nickname !== '-' && (
+                          <p className="text-xs text-text-muted">Nick: <span className="text-text-main font-bold">{selectedOrder.jokies_nickname}</span></p>
+                        )}
+                        {selectedOrder.jokies_game_id && selectedOrder.jokies_game_id !== '-' && (
+                          <p className="text-xs text-text-muted">ID: <span className="text-text-main font-bold">{selectedOrder.jokies_game_id}</span></p>
+                        )}
+                        {selectedOrder.jokies_dynamic_data && renderDynamicData(selectedOrder.jokies_dynamic_data)}
+                        {!selectedOrder.jokies_nickname && !selectedOrder.jokies_game_id && !selectedOrder.jokies_dynamic_data && (
+                          <p className="text-xs text-text-muted italic">Data akun tidak tersedia.</p>
                         )}
                       </>
                     ) : (
@@ -345,17 +316,15 @@ export default function OrdersPage({ user, onWithdraw, globalGames }: OrdersPage
                     </p>
                     {selectedOrder.status !== 'cancelled' ? (
                       <>
-                        {selectedOrder.kijo_dynamic_data ? (
-                          renderDynamicData(selectedOrder.kijo_dynamic_data)
-                        ) : (
-                          <>
-                            <p className="text-xs text-text-muted">Nick: <span className="text-text-main font-bold">
-                              {selectedOrder.kijo_nickname || '-'}
-                            </span></p>
-                            <p className="text-xs text-text-muted">ID: <span className="text-text-main font-bold">
-                              {selectedOrder.kijo_game_id || '-'}
-                            </span></p>
-                          </>
+                        {selectedOrder.kijo_nickname && selectedOrder.kijo_nickname !== '-' && (
+                          <p className="text-xs text-text-muted">Nick: <span className="text-text-main font-bold">{selectedOrder.kijo_nickname}</span></p>
+                        )}
+                        {selectedOrder.kijo_game_id && selectedOrder.kijo_game_id !== '-' && (
+                          <p className="text-xs text-text-muted">ID: <span className="text-text-main font-bold">{selectedOrder.kijo_game_id}</span></p>
+                        )}
+                        {selectedOrder.kijo_dynamic_data && renderDynamicData(selectedOrder.kijo_dynamic_data)}
+                        {!selectedOrder.kijo_nickname && !selectedOrder.kijo_game_id && !selectedOrder.kijo_dynamic_data && (
+                          <p className="text-xs text-text-muted italic">Data akun tidak tersedia.</p>
                         )}
                       </>
                     ) : (
@@ -460,6 +429,19 @@ export default function OrdersPage({ user, onWithdraw, globalGames }: OrdersPage
                 </button>
               </div>
             </div>
+
+            {/* Right Column: Order Chat */}
+            {selectedOrder.status !== 'pending' && (
+              <div className="space-y-8 lg:sticky lg:top-4 self-start">
+                <OrderChat
+                  sessionId={selectedOrder.id}
+                  userId={user.id}
+                  username={user.username || user.full_name}
+                  isActive={!['completed', 'cancelled'].includes(selectedOrder.status)}
+                />
+              </div>
+            )}
+
           </div>
         </div>
 
@@ -601,33 +583,7 @@ export default function OrdersPage({ user, onWithdraw, globalGames }: OrdersPage
           <p className="text-text-muted text-xs md:text-sm mt-1 font-medium">Kelola riwayat dan pantau status joki Anda secara real-time.</p>
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-3 bg-bg-sidebar border border-border-main p-3 rounded-2xl shadow-sm">
-            <span className="text-xs font-bold text-text-muted uppercase tracking-widest ml-2">Urutkan:</span>
-            <select 
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="bg-transparent text-xs md:text-xs font-semibold uppercase tracking-wide text-text-main focus:outline-none cursor-pointer pr-4"
-            >
-              <option value="date">Waktu Sesi</option>
-              <option value="rank">Rank Tertinggi</option>
-            </select>
-          </div>
-          <div className="bg-bg-sidebar border border-border-main p-4 rounded-2xl flex items-center gap-4 shadow-sm">
-            <div className="w-10 h-10 bg-orange-primary/10 rounded-xl flex items-center justify-center text-orange-primary">
-              <CreditCard size={20} />
-            </div>
-            <div>
-              <p className="text-xs text-text-muted font-semibold uppercase tracking-wide">Wallet Saya</p>
-              <p className="text-sm font-bold text-text-main font-mono">Rp {user.wallet_jokies?.toLocaleString() || '0'}</p>
-            </div>
-            <button 
-              onClick={onWithdraw}
-              className="ml-2 bg-orange-primary text-black text-xs font-bold px-4 py-2 rounded-lg uppercase tracking-widest hover:scale-105 transition-all"
-            >
-              Tarik Dana
-            </button>
-          </div>
-          <button 
+          <button
             onClick={fetchOrders}
             className="bg-bg-sidebar border border-border-main p-4 rounded-2xl text-text-muted hover:text-orange-primary hover:border-orange-primary/30 transition-all shadow-sm"
           >
@@ -743,6 +699,7 @@ export default function OrdersPage({ user, onWithdraw, globalGames }: OrdersPage
 }
 
 const OrderCard: React.FC<{ order: any; onClick: () => void; active?: boolean }> = ({ order, onClick, active }) => {
+  const { showAlert } = useAlert();
   const [canStart, setCanStart] = useState(false);
   const [timeLeft, setTimeLeft] = useState<string | null>(null);
 
@@ -790,7 +747,7 @@ const OrderCard: React.FC<{ order: any; onClick: () => void; active?: boolean }>
         body: JSON.stringify({ orderId: order.id })
       });
       if (res.ok) {
-        alert('Sesi dimulai! Silakan hubungi Partner.');
+        showAlert('Sesi dimulai! Silakan hubungi Partner.', 'success');
         window.location.reload();
       }
     } catch (error) {

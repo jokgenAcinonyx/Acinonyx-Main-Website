@@ -1,11 +1,60 @@
 import express from 'express';
+import http from 'http';
+import path from 'path';
+import { Server as SocketServer } from 'socket.io';
 import nodemailer from 'nodemailer';
 import { createServer as createViteServer } from 'vite';
+import { Storage } from '@google-cloud/storage';
 import db from './server/database';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import corsMiddleware from 'cors';
+
+// Google Cloud Storage config
+const GCS_PROJECT_ID = process.env.GCS_PROJECT_ID ?? '';
+const GCS_BUCKET_PROFIL = process.env.GCS_BUCKET_PROFIL ?? 'foto_profil_user_acinonyx';
+const GCS_BUCKET_BUKTI = process.env.GCS_BUCKET_BUKTI ?? 'bukti_foto_pengerjaan_acinonyx';
+const GCS_KEY_FILE_PATH = process.env.GCS_KEY_FILE_PATH ?? '';
+
+let gcsStorage: Storage | null = null;
+if (GCS_PROJECT_ID && GCS_KEY_FILE_PATH) {
+  try {
+    gcsStorage = new Storage({
+      projectId: GCS_PROJECT_ID,
+      keyFilename: path.resolve(process.cwd(), GCS_KEY_FILE_PATH),
+    });
+    console.log('[GCS] Storage client initialized.');
+  } catch (e) {
+    console.warn('[GCS] Failed to initialize Storage client:', e);
+  }
+}
+
+/**
+ * Upload a base64 data URI to Google Cloud Storage.
+ * Returns the public HTTPS URL of the uploaded file.
+ * Falls back to returning the original data URI if GCS is not configured.
+ */
+async function uploadBase64ToGCS(bucketName: string, dataUri: string, folder: string, fileId: string): Promise<string> {
+  if (!gcsStorage) return dataUri; // GCS not configured — passthrough
+  if (!dataUri.startsWith('data:')) return dataUri; // Already a URL — passthrough
+
+  const matches = dataUri.match(/^data:([A-Za-z+\-/]+);base64,(.+)$/);
+  if (!matches || matches.length < 3) throw new Error('Format data URI tidak valid');
+
+  const mimeType = matches[1];
+  const buffer = Buffer.from(matches[2], 'base64');
+  const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') ?? 'bin';
+  const filename = `${folder}/${fileId}-${Date.now()}.${ext}`;
+
+  const bucket = gcsStorage.bucket(bucketName);
+  const file = bucket.file(filename);
+
+  await file.save(buffer, { contentType: mimeType, resumable: false });
+  await file.makePublic();
+
+  return `https://storage.googleapis.com/${bucketName}/${filename}`;
+}
 
 // Email OTP config (uses Gmail SMTP by default)
 const EMAIL_USER = process.env.EMAIL_USER ?? 'jokgen.acinonyx@gmail.com';
@@ -172,6 +221,76 @@ async function startServer() {
     console.warn('[Migration] Could not ensure chat tables exist:', err);
   }
 
+  // Helper: only ALTER TABLE if the column doesn't already exist
+  async function addColumnIfMissing(table: string, column: string, definition: string) {
+    const row = await db.get<any>(
+      `SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+      table, column
+    );
+    if (!row) {
+      await db.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+    }
+  }
+
+  // Feature 1: Avatar column
+  await addColumnIfMissing('users', 'avatar_url', 'TEXT DEFAULT NULL');
+
+  // Feature 2: Social links column
+  await addColumnIfMissing('users', 'social_links', 'JSON DEFAULT NULL');
+
+  // Feature 3: Notification preferences column
+  await addColumnIfMissing('users', 'notification_preferences', 'JSON DEFAULT NULL');
+
+  // Feature 5: Rating reply columns
+  await addColumnIfMissing('ratings', 'reply', 'TEXT DEFAULT NULL');
+  await addColumnIfMissing('ratings', 'reply_at', 'DATETIME DEFAULT NULL');
+
+  // Feature 6: Login history table
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS login_history (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      user_id INT NOT NULL,
+      ip_address VARCHAR(100) DEFAULT NULL,
+      user_agent TEXT DEFAULT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+  } catch (err) {
+    console.warn('[Migration] Could not create login_history table:', err);
+  }
+
+  // Feature 7: Saved payment methods table
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS saved_payment_methods (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      user_id INT NOT NULL,
+      method_type VARCHAR(50) NOT NULL,
+      account_name VARCHAR(255) NOT NULL,
+      account_number VARCHAR(255) NOT NULL,
+      is_default TINYINT(1) DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+  } catch (err) {
+    console.warn('[Migration] Could not create saved_payment_methods table:', err);
+  }
+
+  // Order chat table for Kijo-Jokies real-time messaging
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS order_chats (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      session_id INT NOT NULL,
+      sender_id INT NOT NULL,
+      message TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+      FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+  } catch (err) {
+    console.warn('[Migration] Could not create order_chats table:', err);
+  }
+
   // Validate SMTP config early to ensure OTP can be sent.
   try {
     await transporter.verify();
@@ -207,7 +326,7 @@ async function startServer() {
     }
     try {
       const decoded = jwt.verify(token, JWT_SECRET) as { userId: number; role: string };
-      req.user = decoded;
+      (req as any).user = decoded;
       next();
     } catch {
       return res.status(401).json({ success: false, message: 'Token tidak valid atau sudah kedaluwarsa' });
@@ -216,7 +335,7 @@ async function startServer() {
 
   function requireAdmin(req: any, res: any, next: any) {
     requireAuth(req, res, () => {
-      if (req.user?.role !== 'admin') {
+      if ((req as any).user?.role !== 'admin') {
         return res.status(403).json({ success: false, message: 'Akses Admin diperlukan' });
       }
       next();
@@ -503,7 +622,28 @@ async function startServer() {
     }
   });
 
-  // Auth: Forgot Password - Send OTP
+  // Auth: Forgot Password - Send OTP to registered email
+  app.post('/api/auth/forgot-password', authLimiter, async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ success: false, message: 'Email wajib diisi' });
+
+    const user = await db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Email tidak terdaftar' });
+    }
+
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+
+    await db.prepare('DELETE FROM otps WHERE identifier = ?').run(email);
+    await db.prepare('INSERT INTO otps (identifier, code, expires_at) VALUES (?, ?, ?)').run(email, code, expiresAt);
+
+    await sendOtpEmail(email, code, 'forgot-password');
+
+    res.json({ success: true, message: 'OTP telah dikirim ke email Anda' });
+  });
+
+  // Auth: Request OTP (generic)
   app.post('/api/auth/request-otp', authLimiter, async (req, res) => {
     const { email, purpose = 'login' } = req.body;
     if (!email) return res.status(400).json({ success: false, message: 'Email wajib diisi' });
@@ -561,8 +701,8 @@ async function startServer() {
 
     // 2. Validate Password
     const emojiRegex = /\p{Extended_Pictographic}/u;
-    if (newPassword.length < 8 || emojiRegex.test(newPassword)) {
-      return res.status(400).json({ success: false, message: 'Password minimal 8 karakter dan tidak boleh mengandung emoji' });
+    if (newPassword.length < 8 || emojiRegex.test(newPassword) || !/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) || !/[0-9]/.test(newPassword) || !/[^A-Za-z0-9]/.test(newPassword)) {
+      return res.status(400).json({ success: false, message: 'Password minimal 8 karakter dengan huruf besar, huruf kecil, angka, dan simbol, tanpa emoji' });
     }
 
     try {
@@ -576,23 +716,29 @@ async function startServer() {
   });
 
   // Auth: Change Password (Internal)
-  app.post('/api/users/:id/change-password', async (req, res) => {
+  app.post('/api/users/:id/change-password', requireAuth, async (req, res) => {
     const { id } = req.params;
-    const { oldPassword, newPassword } = req.body;
-
-    const user = db.prepare('SELECT password FROM users WHERE id = ?').get(id) as any;
-    if (!user || !(await bcrypt.compare(oldPassword, user.password))) {
-      return res.status(400).json({ success: false, message: 'Password lama salah' });
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
     }
-
-    const emojiRegex = /\p{Extended_Pictographic}/u;
-    if (newPassword.length < 8 || emojiRegex.test(newPassword)) {
-      return res.status(400).json({ success: false, message: 'Password baru minimal 8 karakter dan tidak boleh mengandung emoji' });
+    const { oldPassword, newPassword } = req.body;
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: 'Password lama dan baru wajib diisi' });
     }
 
     try {
+      const user = await db.prepare('SELECT password FROM users WHERE id = ?').get(id) as any;
+      if (!user || !(await bcrypt.compare(oldPassword, user.password))) {
+        return res.status(400).json({ success: false, message: 'Password lama salah' });
+      }
+
+      const emojiRegex = /\p{Extended_Pictographic}/u;
+      if (newPassword.length < 8 || emojiRegex.test(newPassword) || !/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) || !/[0-9]/.test(newPassword) || !/[^A-Za-z0-9]/.test(newPassword)) {
+        return res.status(400).json({ success: false, message: 'Password baru minimal 8 karakter dengan huruf besar, huruf kecil, angka, dan simbol, tanpa emoji' });
+      }
+
       const hashedNew = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
-      db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashedNew, id);
+      await db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashedNew, id);
       res.json({ success: true, message: 'Password berhasil diperbarui, silakan login kembali' });
     } catch (error) {
       res.status(500).json({ success: false, message: 'Gagal memperbarui password' });
@@ -600,38 +746,52 @@ async function startServer() {
   });
 
   // Auth: Update Phone 2SV - Send OTP to Email
-  app.post('/api/users/:id/update-phone-2sv', async (req, res) => {
+  app.post('/api/users/:id/update-phone-2sv', requireAuth, async (req, res) => {
     const { id } = req.params;
-    const user = db.prepare('SELECT email FROM users WHERE id = ?').get(id) as any;
-    if (!user) return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
+    try {
+      const user = await db.prepare('SELECT email FROM users WHERE id = ?').get(id) as any;
+      if (!user) return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
-    db.prepare('DELETE FROM otps WHERE identifier = ?').run(user.email);
-    db.prepare('INSERT INTO otps (identifier, code, expires_at) VALUES (?, ?, ?)').run(user.email, code, expiresAt);
+      await db.prepare('DELETE FROM otps WHERE identifier = ?').run(user.email);
+      await db.prepare('INSERT INTO otps (identifier, code, expires_at) VALUES (?, ?, ?)').run(user.email, code, expiresAt);
 
-    await sendOtpEmail(user.email, code, 'change-phone');
+      await sendOtpEmail(user.email, code, 'change-phone');
 
-    res.json({ success: true, message: 'OTP verifikasi telah dikirim ke email bisnis Anda' });
+      res.json({ success: true, message: 'OTP verifikasi telah dikirim ke email bisnis Anda' });
+    } catch (error) {
+      console.error('Update Phone 2SV Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal mengirim OTP' });
+    }
   });
 
   // Auth: Verify Phone 2SV and Update Phone
-  app.post('/api/users/:id/verify-phone-2sv', (req, res) => {
+  app.post('/api/users/:id/verify-phone-2sv', requireAuth, async (req, res) => {
     const { id } = req.params;
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
     const { otp, newPhone } = req.body;
-
-    const user = db.prepare('SELECT email FROM users WHERE id = ?').get(id) as any;
-    if (!user) return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
-
-    const otpData = db.prepare('SELECT * FROM otps WHERE identifier = ? AND code = ?').get(user.email, otp) as any;
-    if (!otpData || new Date(otpData.expires_at) < new Date()) {
-      return res.status(400).json({ success: false, message: 'OTP tidak valid atau sudah kedaluwarsa' });
+    if (!otp || !newPhone) {
+      return res.status(400).json({ success: false, message: 'OTP dan nomor telepon baru wajib diisi' });
     }
 
     try {
-      db.prepare('UPDATE users SET phone = ? WHERE id = ?').run(newPhone, id);
-      db.prepare('DELETE FROM otps WHERE identifier = ?').run(user.email);
+      const user = await db.prepare('SELECT email FROM users WHERE id = ?').get(id) as any;
+      if (!user) return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
+
+      const otpData = await db.prepare('SELECT * FROM otps WHERE identifier = ? AND code = ?').get(user.email, otp) as any;
+      if (!otpData || new Date(otpData.expires_at) < new Date()) {
+        return res.status(400).json({ success: false, message: 'OTP tidak valid atau sudah kedaluwarsa' });
+      }
+
+      await db.prepare('UPDATE users SET phone = ? WHERE id = ?').run(newPhone, id);
+      await db.prepare('DELETE FROM otps WHERE identifier = ?').run(user.email);
       res.json({ success: true, message: 'Nomor telepon berhasil diperbarui, silakan login kembali' });
     } catch (error) {
       res.status(500).json({ success: false, message: 'Gagal memperbarui nomor telepon' });
@@ -701,16 +861,29 @@ async function startServer() {
 
           // Add login notification
           await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-            user.id, 
-            'login', 
-            'Login Berhasil', 
+            user.id,
+            'login',
+            'Login Berhasil',
             `Sesi login baru terdeteksi pada ${new Date().toLocaleString('id-ID')}`
           );
 
+          // Track login history
+          try {
+            await db.prepare('INSERT INTO login_history (user_id, ip_address, user_agent) VALUES (?, ?, ?)').run(
+              user.id,
+              req.ip || req.headers['x-forwarded-for'] || null,
+              req.headers['user-agent'] || null
+            );
+          } catch (loginHistErr) {
+            console.error('Failed to record login history:', loginHistErr);
+          }
+
           const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+          // Strip password hash before sending to client
+          const { password: _, ...safeUser } = user;
           res.json({
             success: true,
-            user,
+            user: safeUser,
             token,
             requires2FA: true,
             method,
@@ -737,10 +910,10 @@ async function startServer() {
       return res.status(400).json({ success: false, message: 'Hanya domain @gmail.com dan @yahoo.com yang diizinkan' });
     }
 
-    // 2. Password Validation (Min 8, No Emojis)
+    // 2. Password Validation (Min 8, uppercase, lowercase, number, symbol, no emoji)
     const emojiRegex = /\p{Extended_Pictographic}/u;
-    if (password.length < 8 || emojiRegex.test(password)) {
-      return res.status(400).json({ success: false, message: 'Password minimal 8 karakter dan tidak boleh mengandung emoji' });
+    if (password.length < 8 || emojiRegex.test(password) || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password) || !/[^A-Za-z0-9]/.test(password)) {
+      return res.status(400).json({ success: false, message: 'Password minimal 8 karakter dengan huruf besar, huruf kecil, angka, dan simbol, tanpa emoji' });
     }
 
     // 3. Name Validation (No symbols/numbers)
@@ -774,10 +947,13 @@ async function startServer() {
     }
   });
 
-  app.get('/api/auth/me/:id', async (req, res) => {
+  app.get('/api/auth/me/:id', requireAuth, async (req, res) => {
     const { id } = req.params;
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
     try {
-      const user = await db.prepare('SELECT id, username, email, phone, full_name, role, has_kijo_profile, verified_game, wallet_jokies, balance_active, balance_held FROM users WHERE id = ?').get(id) as any;
+      const user = await db.prepare('SELECT id, username, email, phone, full_name, role, has_kijo_profile, verified_game, wallet_jokies, balance_active, balance_held, avatar_url, social_links FROM users WHERE id = ?').get(id) as any;
       if (user) {
         const gameAccounts = await db.prepare('SELECT * FROM game_accounts WHERE user_id = ? AND deleted = 0').all(id);
         res.json({ success: true, user: { ...user, gameAccounts } });
@@ -824,8 +1000,11 @@ async function startServer() {
   });
 
   // API: Get Kijo Application Status for a user
-  app.get('/api/kijo/application-status/:userId', async (req, res) => {
+  app.get('/api/kijo/application-status/:userId', requireAuth, async (req, res) => {
     const { userId } = req.params;
+    if (String((req as any).user.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
     try {
       const application = await db.prepare('SELECT status, created_at, desired_game FROM kijo_applications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').get(userId);
       res.json(application || null);
@@ -897,7 +1076,7 @@ async function startServer() {
     try {
       console.log('[API] Fetching Marketplace Kijo List...');
       const kijos = (await db.prepare(`
-        SELECT id, username, full_name, role, status_ketersediaan, manual_status, work_start, work_end, motto, detail_kijo, has_kijo_profile, verified_game, max_slots,
+        SELECT id, username, full_name, avatar_url, role, status_ketersediaan, manual_status, work_start, work_end, motto, detail_kijo, has_kijo_profile, verified_game, max_slots,
         (SELECT COUNT(*) FROM categories c JOIN packages p ON c.id = p.category_id WHERE c.user_id = users.id AND c.visible = 1 AND p.deleted = 0 AND p.archived = 0) as total_package_count,
         (SELECT COUNT(*) FROM categories c JOIN packages p ON c.id = p.category_id WHERE c.user_id = users.id AND c.visible = 1 AND p.deleted = 0 AND p.archived = 0) as active_package_count,
         (SELECT COUNT(*) FROM categories c JOIN packages p ON c.id = p.category_id WHERE c.user_id = users.id AND p.package_type = 'VIP' AND c.visible = 1 AND p.deleted = 0 AND p.archived = 0) as has_vip
@@ -908,11 +1087,11 @@ async function startServer() {
       console.log(`[API] Found ${kijos.length} Kijos.`);
 
       const now = new Date();
-      const todayStr = now.toISOString().split('T')[0];
+      const nowStr = now.toISOString().replace('T', ' ').substring(0, 19);
 
       const detailedKijos = await Promise.all(kijos.map(async (kijo) => {
         // Check for holidays
-        const holiday = await db.prepare('SELECT * FROM holidays WHERE user_id = ? AND ? BETWEEN start_date AND end_date').get(kijo.id, todayStr) as any;
+        const holiday = await db.prepare('SELECT * FROM holidays WHERE user_id = ? AND start_date <= ? AND (end_date IS NULL OR end_date >= ?)').get(kijo.id, nowStr, nowStr) as any;
         
         // Get average rating
         const ratingStats = await db.prepare('SELECT AVG(stars) as avg_stars, COUNT(*) as total_reviews FROM ratings WHERE user_id = ?').get(kijo.id) as any;
@@ -966,15 +1145,15 @@ async function startServer() {
     const { id } = req.params;
     console.log(`[API] Fetching Kijo Detail for ID: ${id}`);
     try {
-      const kijo = await db.prepare('SELECT id, username, full_name, motto, detail_kijo, status_ketersediaan, manual_status, work_start, work_end, verified_game, max_slots FROM users WHERE id = ?').get(id) as any;
+      const kijo = await db.prepare('SELECT id, username, full_name, avatar_url, motto, detail_kijo, status_ketersediaan, manual_status, work_start, work_end, verified_game, max_slots FROM users WHERE id = ?').get(id) as any;
       if (!kijo) {
         console.log(`[API] Kijo with ID ${id} not found.`);
         return res.status(404).json({ success: false, message: 'Kijo tidak ditemukan' });
       }
 
       const now = new Date();
-      const todayStr = now.toISOString().split('T')[0];
-      const holiday = await db.prepare('SELECT * FROM holidays WHERE user_id = ? AND ? BETWEEN start_date AND end_date').get(id, todayStr) as any;
+      const nowStr = now.toISOString().replace('T', ' ').substring(0, 19);
+      const holiday = await db.prepare('SELECT * FROM holidays WHERE user_id = ? AND start_date <= ? AND (end_date IS NULL OR end_date >= ?)').get(id, nowStr, nowStr) as any;
       const activeOrders = await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing')").get(id) as { count: number };
 
       let effectiveStatus = kijo.manual_status || 'online';
@@ -985,7 +1164,12 @@ async function startServer() {
       }
 
       console.log(`[API] Fetching etalase for Kijo ID: ${id}`);
-      const etalase = (await db.prepare('SELECT * FROM categories WHERE user_id = ? AND visible = 1').all(id)) as any[];
+      const etalase = (await db.prepare(`
+        SELECT c.* FROM categories c
+        LEFT JOIN game_accounts ga ON c.game_account_id = ga.id
+        WHERE c.user_id = ? AND c.visible = 1
+        AND (c.game_account_id IS NULL OR (ga.id IS NOT NULL AND ga.deleted = 0))
+      `).all(id)) as any[];
       console.log(`[API] Found ${etalase.length} visible categories for Kijo ${id}.`);
       
       const detailedEtalase = await Promise.all(etalase.map(async (cat: any) => {
@@ -1127,7 +1311,7 @@ async function startServer() {
       let finalJokiesDynamicData = req.body.dynamic_data ? JSON.stringify(req.body.dynamic_data) : null;
 
       if (jokiesGameAccountId) {
-        const acc = db.prepare('SELECT nickname, game_id, dynamic_data FROM game_accounts WHERE id = ? AND user_id = ? AND deleted = 0').get(jokiesGameAccountId, jokiesId) as any;
+        const acc = db.prepare('SELECT nickname, game_id, dynamic_data FROM game_accounts WHERE id = ? AND user_id = ? AND account_type = \'personal\' AND deleted = 0').get(jokiesGameAccountId, jokiesId) as any;
         if (acc) {
           finalJokiesNickname = acc.nickname;
           finalJokiesGameId = acc.game_id;
@@ -1184,7 +1368,7 @@ async function startServer() {
       let kijoGameAccount;
       
       if (requestedKijoGameAccountId) {
-        kijoGameAccount = db.prepare('SELECT id, nickname, game_id, dynamic_data FROM game_accounts WHERE id = ? AND user_id = ? AND deleted = 0').get(requestedKijoGameAccountId, kijoId) as any;
+        kijoGameAccount = db.prepare('SELECT id, nickname, game_id, dynamic_data FROM game_accounts WHERE id = ? AND user_id = ? AND account_type = \'boosting\' AND deleted = 0').get(requestedKijoGameAccountId, kijoId) as any;
       }
       
       if (!kijoGameAccount && categoryId) {
@@ -1329,6 +1513,7 @@ async function startServer() {
           order.user_id, 'system', 'Pembatalan Disetujui', `Admin telah menyetujui pembatalan pesanan #${id}.`
         );
       })();
+      io.to('admin-room').emit('admin-refresh');
       res.json({ success: true });
     } catch (e) {
       res.status(500).json({ success: false });
@@ -1383,12 +1568,12 @@ async function startServer() {
   });
 
   // API: Kijo Marks Order as Finished - Now requires 2 photos and Admin verification
-  app.post('/api/kijo/finish-order', (req, res) => {
+  app.post('/api/kijo/finish-order', async (req, res) => {
     const { orderId, kijoId, proofBefore, proofAfter } = req.body;
     try {
-      const order = db.prepare('SELECT *, datetime(created_at) as created_at_dt FROM sessions WHERE id = ? AND user_id = ?').get(orderId, kijoId) as any;
+      const order = await db.prepare('SELECT *, datetime(created_at) as created_at_dt FROM sessions WHERE id = ? AND user_id = ?').get(orderId, kijoId) as any;
       if (!order) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
-      
+
       // Cooldown check
       const createdAt = new Date(order.created_at_dt + 'Z');
       const now = new Date();
@@ -1399,11 +1584,15 @@ async function startServer() {
 
       if (!proofBefore || !proofAfter) return res.status(400).json({ success: false, message: 'Wajib menyertakan foto bukti pengerjaan (Sebelum & Sesudah)' });
 
-      db.prepare("UPDATE sessions SET kijo_finished = 1, screenshot_start = ?, screenshot_end = ?, status = 'pending_completion' WHERE id = ?").run(proofBefore, proofAfter, orderId);
-      
-      // Notify Admin (implicitly via dashboard)
-      // Notify Jokies
-      db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+      // Upload proof photos to GCS (passthrough if GCS not configured or already a URL)
+      const [urlBefore, urlAfter] = await Promise.all([
+        uploadBase64ToGCS(GCS_BUCKET_BUKTI, proofBefore, 'screenshots', `session-${orderId}-before`),
+        uploadBase64ToGCS(GCS_BUCKET_BUKTI, proofAfter, 'screenshots', `session-${orderId}-after`),
+      ]);
+
+      await db.prepare("UPDATE sessions SET kijo_finished = 1, screenshot_start = ?, screenshot_end = ?, status = 'pending_completion' WHERE id = ?").run(urlBefore, urlAfter, orderId);
+
+      await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
         order.jokies_id,
         'order_update',
         'Pesanan Selesai (Menunggu Verifikasi)',
@@ -1412,6 +1601,7 @@ async function startServer() {
 
       res.json({ success: true, message: 'Pesanan telah dikirim ke Admin untuk verifikasi. Dana akan cair dalam maksimal 3 hari.' });
     } catch (error) {
+      console.error('[finish-order]', error);
       res.status(500).json({ success: false });
     }
   });
@@ -1443,6 +1633,7 @@ async function startServer() {
           order.jokies_id, 'order_completed', 'Pesanan Selesai', `Admin telah memverifikasi penyelesaian pesanan #${id}.`
         );
       })();
+      io.to('admin-room').emit('admin-refresh');
       res.json({ success: true });
     } catch (e) {
       res.status(500).json({ success: false });
@@ -1481,6 +1672,7 @@ async function startServer() {
         );
       })();
 
+      io.to('admin-room').emit('admin-refresh');
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ success: false });
@@ -1525,13 +1717,24 @@ async function startServer() {
   });
 
   // API: Add Category
-  app.post('/api/kijo/categories', async (req, res) => {
+  app.post('/api/kijo/categories', requireAuth, async (req, res) => {
     const { userId, name, game_name, game_account_id, rank } = req.body;
+    if (String((req as any).user.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
     try {
       // Verify user exists first
       const user = await db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
       if (!user) {
         return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      // Validate game_account_id references a non-deleted boosting account owned by this user
+      if (game_account_id) {
+        const acct = await db.prepare(`SELECT id FROM game_accounts WHERE id = ? AND user_id = ? AND deleted = 0 AND account_type = 'boosting'`).get(game_account_id, userId);
+        if (!acct) {
+          return res.status(400).json({ success: false, message: 'Akun boosting tidak valid atau sudah dihapus' });
+        }
       }
 
       await db.transaction(async () => {
@@ -1546,11 +1749,22 @@ async function startServer() {
   });
 
   // API: Update Category
-  app.post('/api/kijo/categories/:id', (req, res) => {
+  app.post('/api/kijo/categories/:id', requireAuth, async (req, res) => {
     const { id } = req.params;
     const { name, game_name, game_account_id, rank } = req.body;
+    const userId = (req as any).user.userId;
     try {
-      db.prepare('UPDATE categories SET name = ?, game_name = ?, game_account_id = ?, rank = ? WHERE id = ?').run(name, game_name, game_account_id, rank || null, id);
+      const cat = await db.prepare('SELECT id FROM categories WHERE id = ? AND user_id = ?').get(id, userId);
+      if (!cat) return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+
+      if (game_account_id) {
+        const acct = await db.prepare(`SELECT id FROM game_accounts WHERE id = ? AND user_id = ? AND deleted = 0 AND account_type = 'boosting'`).get(game_account_id, userId);
+        if (!acct) return res.status(400).json({ success: false, message: 'Akun boosting tidak valid' });
+        // Re-link to a valid account: restore category visibility
+        await db.prepare('UPDATE categories SET name = ?, game_name = ?, game_account_id = ?, rank = ?, visible = 1 WHERE id = ?').run(name, game_name, game_account_id, rank || null, id);
+      } else {
+        await db.prepare('UPDATE categories SET name = ?, game_name = ?, game_account_id = ?, rank = ? WHERE id = ?').run(name, game_name, game_account_id || null, rank || null, id);
+      }
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ success: false });
@@ -1583,99 +1797,86 @@ async function startServer() {
   });
 
   // API: Delete Category (Smart Delete with Renaming)
-  app.delete('/api/kijo/categories/:id', async (req, res) => {
+  app.delete('/api/kijo/categories/:id', requireAuth, async (req, res) => {
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'ID tidak valid' });
-    
-    console.log(`[SERVER] Delete Category Request for ID: ${id}`);
+
     try {
       const deleteTx = db.transaction(async (catId: number) => {
-        console.log(`[SERVER] Inside transaction for Category ID: ${catId}`);
-        // Get category owner
-        const category = db.prepare('SELECT * FROM categories WHERE id = ?').get(catId) as any;
-        if (!category) {
-          console.log(`[SERVER] Category ${catId} not found in DB`);
-          return 0; // Not found
-        }
-        console.log(`[SERVER] Category owner is user ${category.user_id}`);
+        const category = await db.prepare('SELECT * FROM categories WHERE id = ?').get(catId) as any;
+        if (!category) return 0;
+        if (String(category.user_id) !== String((req as any).user.userId)) return 0;
 
         const now = new Date();
         const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
         // Get all packages in this category
         const packages = await db.prepare('SELECT * FROM packages WHERE category_id = ?').all(catId) as any[];
-        console.log(`[SERVER] Found ${packages.length} packages in category ${catId}`);
-        
+
+        // Check category history BEFORE processing packages (since we detach them)
+        let categoryHasHistory = false;
         for (const pkg of packages) {
           const ordered = await db.prepare('SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND title = ?').get(category.user_id, pkg.name) as { count: number };
-          
+          if (ordered && ordered.count > 0) {
+            categoryHasHistory = true;
+          }
+        }
+
+        // Now process each package
+        for (const pkg of packages) {
+          const ordered = await db.prepare('SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND title = ?').get(category.user_id, pkg.name) as { count: number };
+
           if (ordered && ordered.count > 0) {
             const archivedName = `${pkg.name}_archived_${timestamp}`;
-            console.log(`[SERVER] Package ${pkg.id} has history. Renaming to ${archivedName} and soft-deleting.`);
             await db.prepare('UPDATE packages SET name = ?, deleted = 1, category_id = NULL WHERE id = ?').run(archivedName, pkg.id);
           } else {
-            console.log(`[SERVER] Package ${pkg.id} has no history. Hard-deleting.`);
             await db.prepare('DELETE FROM packages WHERE id = ?').run(pkg.id);
           }
         }
-        
-        // Check if category itself has history (any package in it was ever ordered)
-        // Or if we just want to always soft-delete categories to be safe
-        const categoryOrdered = await db.prepare(`
-          SELECT COUNT(*) as count FROM sessions s
-          JOIN packages p ON s.title = p.name
-          WHERE s.user_id = ? AND p.category_id = ?
-        `).get(category.user_id, catId) as { count: number };
 
-        if (categoryOrdered && categoryOrdered.count > 0) {
+        if (categoryHasHistory) {
           const archivedCatName = `${category.name}_archived_${timestamp}`;
-          console.log(`[SERVER] Category ${catId} has history. Renaming to ${archivedCatName} and soft-deleting.`);
           await db.prepare('UPDATE categories SET name = ?, deleted = 1 WHERE id = ?').run(archivedCatName, catId);
           return 1;
         } else {
-          console.log(`[SERVER] Category ${catId} has no history. Hard-deleting.`);
           const result = await db.prepare('DELETE FROM categories WHERE id = ?').run(catId);
           return (result as any).affectedRows;
         }
       });
 
       const changes = await deleteTx(id);
-      console.log(`[SERVER] Transaction finished. Changes: ${changes}`);
       if (changes > 0) {
         res.json({ success: true });
       } else {
         res.status(404).json({ success: false, message: 'Kategori tidak ditemukan atau sudah terhapus' });
       }
     } catch (error: any) {
-      console.error('[SERVER] Delete Category Error:', error);
+      console.error('Delete Category Error:', error);
       res.status(500).json({ success: false, message: error.message || 'Gagal menghapus kategori' });
     }
   });
 
   // API: Clear All Packages in Category (Smart Delete with Renaming)
-  app.delete('/api/kijo/categories/:id/packages', async (req, res) => {
+  app.delete('/api/kijo/categories/:id/packages', requireAuth, async (req, res) => {
     const id = Number(req.params.id);
-    console.log(`[SERVER] Clear Packages Request for Category ID: ${id}`);
     try {
       const clearTx = db.transaction(async (catId: number) => {
         const category = (await db.prepare('SELECT user_id FROM categories WHERE id = ?').get(catId)) as { user_id: number };
         if (!category) throw new Error('Category not found');
+        if (String(category.user_id) !== String((req as any).user.userId)) throw new Error('Tidak diizinkan');
 
         const now = new Date();
         const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
         const packages = (await db.prepare('SELECT * FROM packages WHERE category_id = ?').all(catId)) as any[];
-        console.log(`[SERVER] Clearing ${packages.length} packages`);
-        
+
         for (const pkg of packages) {
           const ordered = (await db.prepare('SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND title = ?').get(category.user_id, pkg.name)) as { count: number };
-          
+
           if (ordered && ordered.count > 0) {
             const archivedName = `${pkg.name}_archived_${timestamp}`;
-            console.log(`[SERVER] Package ${pkg.id} has history. Renaming to ${archivedName} and soft-deleting.`);
             await db.prepare('UPDATE packages SET name = ?, deleted = 1, category_id = NULL WHERE id = ?').run(archivedName, pkg.id);
           } else {
-            console.log(`[SERVER] Package ${pkg.id} has no history. Hard-deleting.`);
             await db.prepare('DELETE FROM packages WHERE id = ?').run(pkg.id);
           }
         }
@@ -1683,16 +1884,58 @@ async function startServer() {
       await clearTx(id);
       res.json({ success: true });
     } catch (error: any) {
-      console.error('[SERVER] Clear Packages Error:', error);
+      console.error('Clear Packages Error:', error);
       res.status(500).json({ success: false, message: error.message || 'Gagal mengosongkan paket' });
     }
   });
 
+  // API: Duplicate Category (with all packages)
+  app.post('/api/kijo/categories/:id/duplicate', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    const userId = (req as any).user.userId;
+    try {
+      const cat = await db.prepare('SELECT * FROM categories WHERE id = ? AND user_id = ?').get(id, userId) as any;
+      if (!cat) return res.status(404).json({ success: false, message: 'Kategori tidak ditemukan' });
+
+      const result = await db.prepare(
+        'INSERT INTO categories (user_id, name, game_name, game_account_id, rank, visible) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(userId, `${cat.name} (Copy)`, cat.game_name, cat.game_account_id, cat.rank, 0);
+      const newCatId = result.insertId || (result as any).insertId || 0;
+
+      const packages = (await db.prepare('SELECT * FROM packages WHERE category_id = ? AND deleted = 0').all(id)) as any[];
+      for (const pkg of packages) {
+        await db.prepare(
+          'INSERT INTO packages (category_id, name, price, duration, package_type, player_count, min_players, max_players, is_bundle, bundle_start, bundle_end, rank, is_recurring, recurring_extra_duration, recurring_every_quantity, criteria) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        ).run(newCatId, pkg.name, pkg.price, pkg.duration, pkg.package_type, pkg.player_count, pkg.min_players, pkg.max_players, pkg.is_bundle, pkg.bundle_start, pkg.bundle_end, pkg.rank, pkg.is_recurring, pkg.recurring_extra_duration, pkg.recurring_every_quantity, pkg.criteria);
+      }
+
+      res.json({ success: true, newCategoryId: newCatId });
+    } catch (error: any) {
+      console.error('Duplicate Category Error:', error);
+      res.status(500).json({ success: false, message: error.message || 'Gagal menduplikasi' });
+    }
+  });
+
   // API: Toggle Category Visibility
-  app.post('/api/kijo/categories/:id/visibility', async (req, res) => {
+  app.post('/api/kijo/categories/:id/visibility', requireAuth, async (req, res) => {
     const { id } = req.params;
     const { visible } = req.body; // 1 or 0
+    const userId = (req as any).user.userId;
     try {
+      const cat = await db.prepare('SELECT id, game_account_id, user_id FROM categories WHERE id = ?').get(id) as any;
+      if (!cat || String(cat.user_id) !== String(userId)) {
+        return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+      }
+      // Block showing category if no valid account is linked
+      if (visible === 1 && cat.game_account_id) {
+        const acct = await db.prepare('SELECT id FROM game_accounts WHERE id = ? AND deleted = 0').get(cat.game_account_id) as any;
+        if (!acct) {
+          return res.status(400).json({ success: false, message: 'Tidak dapat menampilkan kategori tanpa akun boosting aktif' });
+        }
+      }
+      if (visible === 1 && !cat.game_account_id) {
+        return res.status(400).json({ success: false, message: 'Tambahkan akun boosting ke kategori terlebih dahulu' });
+      }
       await db.prepare('UPDATE categories SET visible = ? WHERE id = ?').run(visible, id);
       res.json({ success: true });
     } catch (error) {
@@ -1701,40 +1944,36 @@ async function startServer() {
   });
 
   // API: Delete Package (Smart Delete with Renaming)
-  app.delete('/api/kijo/packages/:id', async (req, res) => {
+  app.delete('/api/kijo/packages/:id', requireAuth, async (req, res) => {
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'ID Paket tidak valid' });
-    
-    console.log(`[SERVER] Delete Package Request for ID: ${id}`);
+
     try {
       const pkg = await db.prepare('SELECT * FROM packages WHERE id = ?').get(id) as any;
       if (!pkg) {
-        console.log(`[SERVER] Package ${id} not found`);
         return res.status(404).json({ success: false, message: 'Paket tidak ditemukan' });
       }
 
       const category = (await db.prepare('SELECT user_id FROM categories WHERE id = ?').get(pkg.category_id)) as { user_id: number };
       const userId = category ? category.user_id : null;
-      
-      console.log(`[SERVER] Found package ${id} ("${pkg.name}") for user ${userId}`);
+
+      if (userId && String(userId) !== String((req as any).user.userId)) {
+        return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+      }
 
       const ordered = userId ? (await db.prepare('SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND title = ?').get(userId, pkg.name)) as { count: number } : { count: 0 };
-      
+
       if (ordered && ordered.count > 0) {
         const now = new Date();
         const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
         const archivedName = `${pkg.name}_archived_${timestamp}`;
-        
-        console.log(`[SERVER] Package ${id} has history. Renaming to ${archivedName} and soft-deleting.`);
         await db.prepare('UPDATE packages SET name = ?, deleted = 1, category_id = NULL WHERE id = ?').run(archivedName, id);
       } else {
-        console.log(`[SERVER] Package ${id} has no history. Hard-deleting.`);
-        const result = await db.prepare('DELETE FROM packages WHERE id = ?').run(id);
-        console.log(`[SERVER] Package ${id} deleted. Changes: ${(result as any).changes}`);
+        await db.prepare('DELETE FROM packages WHERE id = ?').run(id);
       }
       res.json({ success: true });
     } catch (error: any) {
-      console.error('[SERVER] Delete Package Error:', error);
+      console.error('Delete Package Error:', error);
       res.status(500).json({ success: false, message: error.message || 'Gagal menghapus paket' });
     }
   });
@@ -1788,6 +2027,9 @@ async function startServer() {
       // Get existing sessions for this date
       const sessions = (await db.prepare("SELECT scheduled_at, duration FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing') AND scheduled_at LIKE ?").all(id, `${date}%`)) as any[];
 
+      // Get holidays for this kijo (for date picker to disable holiday days)
+      const holidays = (await db.prepare('SELECT start_date, end_date FROM holidays WHERE user_id = ? ORDER BY start_date ASC').all(id)) as any[];
+
       res.json({
         work_start: kijo.work_start,
         work_end: kijo.work_end,
@@ -1797,6 +2039,7 @@ async function startServer() {
         weekly_days: kijo.weekly_days,
         pre_order_days: kijo.pre_order_days !== null ? kijo.pre_order_days : 7,
         break_until: kijo.break_until,
+        holidays,
         busy_slots: sessions.map(s => ({
           start: s.scheduled_at,
           duration: s.duration || 1
@@ -1836,7 +2079,8 @@ async function startServer() {
           `Partner telah memulai sesi untuk pesanan #${orderId} (${updatedSession.title}). Selamat bermain!`
         );
       }
-      
+
+      io.to('admin-room').emit('admin-refresh');
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Failed to start session' });
@@ -2060,10 +2304,13 @@ async function startServer() {
   });
 
   // API: Get Account Data (Ratings, Game Accounts, Wallet, Stats)
-  app.get('/api/kijo/account/:userId', async (req, res) => {
+  app.get('/api/kijo/account/:userId', requireAuth, async (req, res) => {
     const { userId } = req.params;
+    if (String((req as any).user.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
     try {
-      const user = await db.prepare('SELECT id, username, email, phone, full_name, role, balance_active, balance_held, wallet_jokies, status_ketersediaan, work_start, work_end, break_start, break_end, weekly_days, off_days, manual_status, max_slots, break_time, pre_order_days, motto, detail_kijo, is_suspended, is_verified, has_kijo_profile, break_until, verified_game, created_at FROM users WHERE id = ?').get(userId) as any;
+      const user = await db.prepare('SELECT id, username, email, phone, full_name, role, balance_active, balance_held, wallet_jokies, status_ketersediaan, work_start, work_end, break_start, break_end, weekly_days, off_days, manual_status, max_slots, break_time, pre_order_days, motto, detail_kijo, is_suspended, is_verified, has_kijo_profile, break_until, verified_game, created_at, avatar_url, social_links, notification_preferences FROM users WHERE id = ?').get(userId) as any;
       if (!user) return res.status(404).json({ error: 'User not found' });
 
       const isKijo = user.role === 'kijo';
@@ -2072,7 +2319,7 @@ async function startServer() {
         ? await db.prepare('SELECT * FROM ratings WHERE user_id = ? ORDER BY created_at DESC').all(userId)
         : await db.prepare('SELECT * FROM ratings WHERE jokies_id = ? ORDER BY created_at DESC').all(userId);
         
-      const gameAccounts = await db.prepare('SELECT * FROM game_accounts WHERE user_id = ?').all(userId);
+      const gameAccounts = await db.prepare('SELECT * FROM game_accounts WHERE user_id = ? AND deleted = 0').all(userId);
       const transactions = await db.prepare('SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20').all(userId);
       const withdrawals = await db.prepare('SELECT * FROM withdrawals WHERE user_id = ? ORDER BY created_at DESC').all(userId);
       
@@ -2096,6 +2343,18 @@ async function startServer() {
         SELECT verified_game FROM users WHERE id = ? AND verified_game IS NOT NULL AND role = 'kijo'
       `).all(userId, userId) as { game_name: string }[];
 
+      // Login history (last 5)
+      let loginHistory: any[] = [];
+      try {
+        loginHistory = await db.prepare('SELECT id, ip_address, user_agent, created_at FROM login_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 5').all(userId) as any[];
+      } catch (e) { /* table may not exist yet — pending server restart */ }
+
+      // Saved payment methods
+      let savedPaymentMethods: any[] = [];
+      try {
+        savedPaymentMethods = await db.prepare('SELECT * FROM saved_payment_methods WHERE user_id = ? ORDER BY is_default DESC, created_at DESC').all(userId) as any[];
+      } catch (e) { /* table may not exist yet — pending server restart */ }
+
       res.json({
         user,
         ratings,
@@ -2103,6 +2362,8 @@ async function startServer() {
         transactions,
         withdrawals,
         activeGames: activeGames.map(g => g.game_name),
+        loginHistory,
+        savedPaymentMethods,
         stats: {
           monthlyOrders: monthlyOrders.count,
           totalBooked: totalBooked.count
@@ -2114,26 +2375,264 @@ async function startServer() {
     }
   });
 
-  // API: Request Withdrawal
-  app.post('/api/kijo/withdraw', (req, res) => {
-    const { userId, amount, destination } = req.body;
+  // =====================================================
+  // Feature 1: Avatar Upload (base64 → GCS / URL)
+  // =====================================================
+  app.post('/api/users/:id/avatar', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
     try {
-      if (amount < 20000) {
-        return res.status(400).json({ success: false, message: 'Minimal penarikan adalah Rp 20.000' });
+      const { avatar_url } = req.body;
+      if (!avatar_url || typeof avatar_url !== 'string') {
+        return res.status(400).json({ success: false, message: 'avatar_url wajib diisi' });
       }
-      const user = db.prepare('SELECT balance_active FROM users WHERE id = ?').get(userId) as any;
-      if (user.balance_active < amount) {
-        return res.status(400).json({ success: false, message: 'Saldo tidak mencukupi' });
+      // 10 MB cap on raw base64 string
+      if (avatar_url.length > 10 * 1024 * 1024) {
+        return res.status(400).json({ success: false, message: 'Avatar terlalu besar (maks 10MB)' });
+      }
+      // Upload to GCS if it's a base64 data URI, else store as-is
+      const finalUrl = await uploadBase64ToGCS(GCS_BUCKET_PROFIL, avatar_url, 'avatars', `user-${id}`);
+      await db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run(finalUrl, id);
+      res.json({ success: true, avatar_url: finalUrl, message: 'Avatar berhasil diperbarui' });
+    } catch (error) {
+      console.error('Avatar Update Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal memperbarui avatar' });
+    }
+  });
+
+  // =====================================================
+  // Feature 2: Social Links
+  // =====================================================
+  app.post('/api/users/:id/social-links', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
+    try {
+      const { social_links } = req.body;
+      if (!social_links || typeof social_links !== 'object') {
+        return res.status(400).json({ success: false, message: 'social_links wajib diisi' });
+      }
+      // Only allow known keys
+      const allowed = ['discord', 'steam', 'battlenet'];
+      const filtered: Record<string, string> = {};
+      for (const key of allowed) {
+        if (social_links[key] !== undefined) {
+          filtered[key] = String(social_links[key]);
+        }
+      }
+      await db.prepare('UPDATE users SET social_links = ? WHERE id = ?').run(JSON.stringify(filtered), id);
+      res.json({ success: true, message: 'Social links berhasil diperbarui', social_links: filtered });
+    } catch (error) {
+      console.error('Social Links Update Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal memperbarui social links' });
+    }
+  });
+
+  // =====================================================
+  // Feature 3: Notification Preferences
+  // =====================================================
+  app.post('/api/users/:id/notification-preferences', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
+    try {
+      const { preferences } = req.body;
+      if (!preferences || typeof preferences !== 'object') {
+        return res.status(400).json({ success: false, message: 'preferences wajib diisi' });
+      }
+      const allowed = ['new_order', 'order_completed', 'withdrawal_update', 'system_announcement'];
+      const filtered: Record<string, boolean> = {};
+      for (const key of allowed) {
+        filtered[key] = preferences[key] === true;
+      }
+      await db.prepare('UPDATE users SET notification_preferences = ? WHERE id = ?').run(JSON.stringify(filtered), id);
+      res.json({ success: true, message: 'Preferensi notifikasi berhasil diperbarui', preferences: filtered });
+    } catch (error) {
+      console.error('Notification Preferences Update Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal memperbarui preferensi notifikasi' });
+    }
+  });
+
+  // =====================================================
+  // Feature 4: Session History Export (CSV)
+  // =====================================================
+  app.get('/api/kijo/sessions-export/:userId', requireAuth, async (req, res) => {
+    const { userId } = req.params;
+    if (String((req as any).user.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
+    try {
+      const user = await db.prepare('SELECT role FROM users WHERE id = ?').get(userId) as any;
+      if (!user) return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
+
+      const sessions = user.role === 'kijo'
+        ? await db.prepare('SELECT s.id, s.status, s.scheduled_at, s.duration, s.created_at, u.username AS jokies_name FROM sessions s LEFT JOIN users u ON s.jokies_id = u.id WHERE s.user_id = ? ORDER BY s.created_at DESC').all(userId) as any[]
+        : await db.prepare('SELECT s.id, s.status, s.scheduled_at, s.duration, s.created_at, u.username AS kijo_name FROM sessions s LEFT JOIN users u ON s.user_id = u.id WHERE s.jokies_id = ? ORDER BY s.created_at DESC').all(userId) as any[];
+
+      // Build CSV
+      const partnerHeader = user.role === 'kijo' ? 'Jokies' : 'Kijo';
+      const header = `ID,Status,Scheduled At,Duration,Created At,${partnerHeader}`;
+      const rows = sessions.map((s: any) => {
+        const partner = user.role === 'kijo' ? (s.jokies_name || '') : (s.kijo_name || '');
+        return `${s.id},${s.status},"${s.scheduled_at || ''}",${s.duration || ''},"${s.created_at || ''}","${partner}"`;
+      });
+      const csv = [header, ...rows].join('\n');
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="sessions-${userId}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error('Session Export Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal mengekspor sesi' });
+    }
+  });
+
+  // =====================================================
+  // Feature 5: Rating Reply
+  // =====================================================
+  app.post('/api/kijo/ratings/:ratingId/reply', requireAuth, async (req, res) => {
+    const { ratingId } = req.params;
+    try {
+      const { reply } = req.body;
+      if (!reply || typeof reply !== 'string' || reply.trim().length === 0) {
+        return res.status(400).json({ success: false, message: 'Balasan wajib diisi' });
+      }
+      if (reply.length > 300) {
+        return res.status(400).json({ success: false, message: 'Balasan maksimal 300 karakter' });
       }
 
-      db.transaction(() => {
-        db.prepare('UPDATE users SET balance_active = balance_active - ? WHERE id = ?').run(amount, userId);
-        db.prepare('INSERT INTO withdrawals (user_id, amount, destination) VALUES (?, ?, ?)').run(userId, amount, destination);
-        db.prepare('INSERT INTO transactions (user_id, type, amount, description, status) VALUES (?, ?, ?, ?, ?)').run(userId, 'withdrawal', amount, `Penarikan ke ${destination}`, 'pending');
+      // Verify the rating belongs to the logged-in user (kijo)
+      const rating = await db.prepare('SELECT id, user_id FROM ratings WHERE id = ?').get(ratingId) as any;
+      if (!rating) {
+        return res.status(404).json({ success: false, message: 'Rating tidak ditemukan' });
+      }
+      if (String(rating.user_id) !== String((req as any).user.userId)) {
+        return res.status(403).json({ success: false, message: 'Tidak diizinkan membalas rating ini' });
+      }
+
+      await db.prepare('UPDATE ratings SET reply = ?, reply_at = NOW() WHERE id = ?').run(reply.trim(), ratingId);
+      res.json({ success: true, message: 'Balasan berhasil disimpan' });
+    } catch (error) {
+      console.error('Rating Reply Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal menyimpan balasan' });
+    }
+  });
+
+  // =====================================================
+  // Feature 6: Login History
+  // =====================================================
+  app.get('/api/users/:id/login-history', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
+    try {
+      const history = await db.prepare('SELECT id, ip_address, user_agent, created_at FROM login_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').all(id);
+      res.json({ success: true, history });
+    } catch (error) {
+      console.error('Login History Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal mengambil riwayat login' });
+    }
+  });
+
+  // =====================================================
+  // Feature 7: Saved Payment Methods
+  // =====================================================
+  app.get('/api/users/:id/payment-methods', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
+    try {
+      const methods = await db.prepare('SELECT * FROM saved_payment_methods WHERE user_id = ? ORDER BY is_default DESC, created_at DESC').all(id);
+      res.json({ success: true, methods });
+    } catch (error) {
+      console.error('Payment Methods Get Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal mengambil metode pembayaran' });
+    }
+  });
+
+  app.post('/api/users/:id/payment-methods', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
+    try {
+      const { method_type, account_name, account_number, is_default } = req.body;
+      if (!method_type || !account_name || !account_number) {
+        return res.status(400).json({ success: false, message: 'method_type, account_name, dan account_number wajib diisi' });
+      }
+
+      // If setting as default, unset other defaults first
+      if (is_default) {
+        await db.prepare('UPDATE saved_payment_methods SET is_default = 0 WHERE user_id = ?').run(id);
+      }
+
+      const result = await db.prepare('INSERT INTO saved_payment_methods (user_id, method_type, account_name, account_number, is_default) VALUES (?, ?, ?, ?, ?)').run(
+        id, method_type, account_name, account_number, is_default ? 1 : 0
+      );
+      res.json({ success: true, message: 'Metode pembayaran berhasil disimpan', id: result.insertId });
+    } catch (error) {
+      console.error('Payment Methods Add Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal menyimpan metode pembayaran' });
+    }
+  });
+
+  app.delete('/api/users/:id/payment-methods/:methodId', requireAuth, async (req, res) => {
+    const { id, methodId } = req.params;
+    if (String((req as any).user.userId) !== String(id)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
+    try {
+      // Verify the payment method belongs to this user
+      const method = await db.prepare('SELECT id FROM saved_payment_methods WHERE id = ? AND user_id = ?').get(methodId, id) as any;
+      if (!method) {
+        return res.status(404).json({ success: false, message: 'Metode pembayaran tidak ditemukan' });
+      }
+      await db.prepare('DELETE FROM saved_payment_methods WHERE id = ? AND user_id = ?').run(methodId, id);
+      res.json({ success: true, message: 'Metode pembayaran berhasil dihapus' });
+    } catch (error) {
+      console.error('Payment Methods Delete Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal menghapus metode pembayaran' });
+    }
+  });
+
+  // API: Request Withdrawal
+  app.post('/api/kijo/withdraw', requireAuth, async (req, res) => {
+    const { userId, amount, destination } = req.body;
+    if (String((req as any).user.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
+    try {
+      if (typeof amount !== 'number' || amount < 20000) {
+        return res.status(400).json({ success: false, message: 'Minimal penarikan adalah Rp 20.000' });
+      }
+      if (amount <= 0) {
+        return res.status(400).json({ success: false, message: 'Jumlah penarikan tidak valid' });
+      }
+      if (!destination) {
+        return res.status(400).json({ success: false, message: 'Tujuan penarikan wajib diisi' });
+      }
+
+      await db.transaction(async () => {
+        const user = await db.prepare('SELECT balance_active FROM users WHERE id = ?').get(userId) as any;
+        if (!user || user.balance_active < amount) {
+          throw new Error('INSUFFICIENT_BALANCE');
+        }
+        await db.prepare('UPDATE users SET balance_active = balance_active - ? WHERE id = ?').run(amount, userId);
+        await db.prepare('INSERT INTO withdrawals (user_id, amount, destination) VALUES (?, ?, ?)').run(userId, amount, destination);
+        await db.prepare('INSERT INTO transactions (user_id, type, amount, description, status) VALUES (?, ?, ?, ?, ?)').run(userId, 'withdrawal', amount, `Penarikan ke ${destination}`, 'pending');
       })();
 
       res.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.message === 'INSUFFICIENT_BALANCE') {
+        return res.status(400).json({ success: false, message: 'Saldo tidak mencukupi' });
+      }
       res.status(500).json({ success: false });
     }
   });
@@ -2273,8 +2772,11 @@ async function startServer() {
   });
 
   // API: Update/Add Game Account
-  app.post('/api/kijo/game-accounts', async (req, res) => {
+  app.post('/api/kijo/game-accounts', requireAuth, async (req, res) => {
     const { id, userId, game_name, nickname, game_id, rank, server, dynamic_data, account_type } = req.body;
+    if (String((req as any).user.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
     try {
       const dynamicDataStr = dynamic_data ? JSON.stringify(dynamic_data) : null;
       
@@ -2290,18 +2792,8 @@ async function startServer() {
           WHERE id = ? AND user_id = ?
         `).run(nickname, game_id, rank, server, dynamicDataStr, account_type || 'personal', id, userId);
 
-        // If it's a boosting account, also update the corresponding personal account if it exists
+        // Update sessions that are missing kijo details (boosting accounts only)
         if (account_type === 'boosting') {
-          await db.prepare(`
-            UPDATE game_accounts SET 
-              nickname = ?, 
-              rank = ?, 
-              server = ?,
-              dynamic_data = ?
-            WHERE user_id = ? AND game_name = ? AND game_id = ? AND account_type = 'personal'
-          `).run(nickname, rank, server, dynamicDataStr, userId, game_name, game_id);
-
-          // Update sessions that are missing kijo details
           await db.prepare(`
             UPDATE sessions SET 
               kijo_nickname = ?, 
@@ -2314,27 +2806,46 @@ async function startServer() {
           `).run(nickname, game_id, id, userId, `%${game_name}%`, game_name);
         }
       } else {
+        // Check for a soft-deleted duplicate before inserting
+        const existingDeleted = await db.prepare(
+          `SELECT id FROM game_accounts WHERE user_id = ? AND game_name = ? AND game_id = ? AND account_type = ? AND deleted = 1`
+        ).get(userId, game_name, game_id, account_type || 'personal') as any;
+
+        if (existingDeleted) {
+          // Restore the deleted account instead of creating a new duplicate
+          await db.prepare(`
+            UPDATE game_accounts SET
+              deleted = 0, nickname = ?, rank = ?, server = ?, dynamic_data = ?
+            WHERE id = ?
+          `).run(nickname, rank, server, dynamicDataStr, existingDeleted.id);
+
+          // Restore visibility of categories that were hidden due to this account's deletion
+          await db.prepare('UPDATE categories SET visible = 1 WHERE game_account_id = ? AND user_id = ?').run(existingDeleted.id, userId);
+
+          if (account_type === 'boosting') {
+            await db.prepare(`
+              UPDATE sessions SET
+                kijo_nickname = ?,
+                kijo_game_id = ?,
+                kijo_game_account_id = ?
+              WHERE user_id = ?
+              AND (game_title LIKE ? OR ? LIKE '%' || game_title || '%')
+              AND (kijo_nickname = '-' OR kijo_nickname IS NULL OR kijo_nickname = '')
+              AND status IN ('upcoming', 'ongoing')
+            `).run(nickname, game_id, existingDeleted.id, userId, `%${game_name}%`, game_name);
+          }
+
+          return res.json({ success: true, restored: true });
+        }
+
         const result = await db.prepare(`
           INSERT INTO game_accounts (user_id, game_name, nickname, game_id, rank, server, dynamic_data, account_type)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).run(userId, game_name, nickname, game_id, rank, server, dynamicDataStr, account_type || 'personal');
         const accountId = result.insertId || (result as any).insertId || (result as any).insert_id || (result as any).insertId || 0;
 
-        // If it's a boosting account, also add as a personal account if it doesn't exist
+        // Update sessions that are missing kijo details (boosting accounts only)
         if (account_type === 'boosting') {
-          const existingPersonal = await db.prepare(`
-            SELECT id FROM game_accounts 
-            WHERE user_id = ? AND game_name = ? AND game_id = ? AND account_type = 'personal'
-          `).get(userId, game_name, game_id);
-
-          if (!existingPersonal) {
-            await db.prepare(`
-              INSERT INTO game_accounts (user_id, game_name, nickname, game_id, rank, server, dynamic_data, account_type)
-              VALUES (?, ?, ?, ?, ?, ?, ?, 'personal')
-            `).run(userId, game_name, nickname, game_id, rank, server, dynamicDataStr);
-          }
-
-          // Update sessions that are missing kijo details
           await db.prepare(`
             UPDATE sessions SET 
               kijo_nickname = ?, 
@@ -2355,10 +2866,16 @@ async function startServer() {
   });
 
   // API: Update Motto
-  app.post('/api/kijo/update-motto', (req, res) => {
+  app.post('/api/kijo/update-motto', requireAuth, async (req, res) => {
     const { userId, motto } = req.body;
+    if (String((req as any).user.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Tidak diizinkan' });
+    }
+    if (typeof motto === 'string' && motto.length > 500) {
+      return res.status(400).json({ success: false, message: 'Motto maksimal 500 karakter' });
+    }
     try {
-      db.prepare('UPDATE users SET motto = ? WHERE id = ?').run(motto, userId);
+      await db.prepare('UPDATE users SET motto = ? WHERE id = ?').run(motto, userId);
       res.json({ success: true });
     } catch (error) {
       console.error('Update Motto Error:', error);
@@ -2367,10 +2884,30 @@ async function startServer() {
   });
 
   // API: Delete Game Account
-  app.delete('/api/kijo/game-accounts/:id', (req, res) => {
+  app.delete('/api/kijo/game-accounts/:id', requireAuth, async (req, res) => {
     const { id } = req.params;
+    const userId = (req as any).user.userId;
     try {
-      db.prepare('UPDATE game_accounts SET deleted = 1 WHERE id = ?').run(id);
+      // Smart delete: block if active sessions reference this account
+      const activeSessions = db.prepare(`
+        SELECT COUNT(*) as count FROM sessions
+        WHERE (jokies_game_account_id = ? OR kijo_game_account_id = ?)
+        AND status IN ('upcoming', 'ongoing')
+      `).get(id, id) as any;
+
+      if (activeSessions.count > 0) {
+        return res.status(409).json({
+          success: false,
+          message: `Tidak dapat menghapus akun game ini. Ada ${activeSessions.count} pesanan aktif yang terkait. Selesaikan pesanan terlebih dahulu.`
+        });
+      }
+
+      // Soft delete the account
+      await db.prepare('UPDATE game_accounts SET deleted = 1 WHERE id = ? AND user_id = ?').run(id, userId);
+
+      // Hide (but don't hard-delete) etalase categories that used this account
+      await db.prepare('UPDATE categories SET visible = 0 WHERE game_account_id = ? AND user_id = ?').run(id, userId);
+
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ success: false });
@@ -2401,31 +2938,34 @@ async function startServer() {
   });
 
   // API: Submit Rating
-  app.post('/api/jokies/ratings', (req, res) => {
+  app.post('/api/jokies/ratings', async (req, res) => {
     const { userId, jokiesId, sessionId, stars, skillRating, attitudeRating, comment, tags, finalScreenshot } = req.body;
     try {
-      db.transaction(() => {
-        db.prepare(`
-          INSERT INTO ratings (user_id, jokies_id, session_id, stars, skill_rating, attitude_rating, comment, tags, final_screenshot) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(userId, jokiesId, sessionId, stars, skillRating, attitudeRating, comment, JSON.stringify(tags), finalScreenshot);
-        
+      // Upload screenshot to GCS if provided
+      const screenshotUrl = finalScreenshot
+        ? await uploadBase64ToGCS(GCS_BUCKET_BUKTI, finalScreenshot, 'ratings', `session-${sessionId}-final`)
+        : finalScreenshot;
+
+      await db.transaction(async () => {
+        await db.run(
+          `INSERT INTO ratings (user_id, jokies_id, session_id, stars, skill_rating, attitude_rating, comment, tags, final_screenshot)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          userId, jokiesId, sessionId, stars, skillRating, attitudeRating, comment, JSON.stringify(tags), screenshotUrl
+        );
+
         // Reward Jokies (Not specified but good for UX)
-        db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-          jokiesId,
-          'system',
-          'Ulasan Terkirim',
-          'Terima kasih! Ulasanmu membantu KIJO membangun reputasi.'
+        await db.run(
+          'INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)',
+          jokiesId, 'system', 'Ulasan Terkirim', 'Terima kasih! Ulasanmu membantu KIJO membangun reputasi.'
         );
 
         // Admin Warning Logic
         if (stars === 1) {
-          const admin = db.prepare("SELECT id FROM users WHERE role = 'admin'").get() as any;
+          const admin = await db.get<any>("SELECT id FROM users WHERE role = 'admin'");
           if (admin) {
-            db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-              admin.id,
-              'system',
-              'PERINGATAN AUDIT: Bintang 1',
+            await db.run(
+              'INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)',
+              admin.id, 'system', 'PERINGATAN AUDIT: Bintang 1',
               `KIJO ID #${userId} mendapatkan rating Bintang 1. Segera audit riwayat pengerjaan.`
             );
           }
@@ -2673,9 +3213,127 @@ async function startServer() {
           `Pesanan #${session.id} telah diselesaikan oleh Admin Minox.`
         );
       })();
+      io.to('admin-room').emit('admin-refresh');
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ success: false });
+    }
+  });
+
+  // API: Admin Topup Balance (Money Simulation for Testing)
+  app.post('/api/admin/users/:id/topup', async (req, res) => {
+    const { id } = req.params;
+    const { amount, wallet_type } = req.body; // wallet_type: 'jokies' | 'kijo'
+    try {
+      if (!amount || Number(amount) <= 0) return res.status(400).json({ error: 'Jumlah tidak valid' });
+      const user = await db.prepare('SELECT id, role FROM users WHERE id = ?').get(id) as any;
+      if (!user) return res.status(404).json({ error: 'User tidak ditemukan' });
+
+      if (wallet_type === 'jokies') {
+        await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(Number(amount), id);
+      } else if (wallet_type === 'kijo') {
+        await db.prepare('UPDATE users SET balance_active = balance_active + ? WHERE id = ?').run(Number(amount), id);
+      } else {
+        return res.status(400).json({ error: 'Tipe wallet tidak valid' });
+      }
+
+      await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+        id, 'system', 'Topup Saldo (Test)', `Admin telah menambahkan Rp ${Number(amount).toLocaleString()} ke ${wallet_type === 'jokies' ? 'Wallet Jokies' : 'Balance Kijo'} Anda.`
+      );
+      io.to('admin-room').emit('admin-refresh');
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Gagal topup saldo' });
+    }
+  });
+
+  // API: Admin Force Start Session (Override scheduled time)
+  app.post('/api/admin/sessions/:id/force-start', async (req, res) => {
+    const { id } = req.params;
+    try {
+      const session = await db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as any;
+      if (!session) return res.status(404).json({ error: 'Sesi tidak ditemukan' });
+      if (session.status !== 'upcoming') return res.status(400).json({ error: 'Sesi bukan dalam status mendatang' });
+
+      // Copy kijo account data from game_accounts if missing
+      if (!session.kijo_nickname || session.kijo_nickname === '-') {
+        const boostingAcc = await db.prepare(`
+          SELECT nickname, game_id, id FROM game_accounts
+          WHERE user_id = ? AND (game_name LIKE ? OR ? LIKE '%' || game_name || '%')
+          AND account_type = 'boosting' AND deleted = 0
+        `).get(session.user_id, `%${session.game_title}%`, session.game_title) as any;
+        if (boostingAcc) {
+          await db.prepare('UPDATE sessions SET kijo_nickname = ?, kijo_game_id = ?, kijo_game_account_id = ? WHERE id = ?').run(boostingAcc.nickname, boostingAcc.game_id, boostingAcc.id, id);
+        }
+      }
+
+      await db.prepare("UPDATE sessions SET status = 'ongoing' WHERE id = ?").run(id);
+
+      await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+        session.user_id, 'order_update', 'Sesi Dimulai Admin', `Admin telah memulai sesi pesanan #${id} secara manual.`
+      );
+      await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+        session.jokies_id, 'order_update', 'Sesi Dimulai!', `Partner telah memulai sesi untuk pesanan #${id}.`
+      );
+
+      io.to('admin-room').emit('admin-refresh');
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Gagal memulai sesi' });
+    }
+  });
+
+  // API: Admin Force Cancel Session
+  app.post('/api/admin/sessions/:id/force-cancel', async (req, res) => {
+    const { id } = req.params;
+    const { refund } = req.body; // boolean: whether to refund jokies
+    try {
+      const session = await db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as any;
+      if (!session) return res.status(404).json({ error: 'Sesi tidak ditemukan' });
+      if (!['upcoming', 'ongoing', 'pending_cancellation'].includes(session.status)) {
+        return res.status(400).json({ error: 'Sesi sudah selesai atau dibatalkan' });
+      }
+
+      await db.transaction(async () => {
+        await db.prepare("UPDATE sessions SET status = 'cancelled', cancelled_by = 'admin' WHERE id = ?").run(id);
+        if (refund) {
+          await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(session.total_price, session.jokies_id);
+        }
+        await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+          session.jokies_id, 'system', 'Pesanan Dibatalkan Admin', `Pesanan #${id} telah dibatalkan oleh Admin Minox.${refund ? ` Dana Rp ${session.total_price.toLocaleString()} telah dikembalikan.` : ''}`
+        );
+        await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+          session.user_id, 'system', 'Pesanan Dibatalkan Admin', `Pesanan #${id} telah dibatalkan oleh Admin Minox.`
+        );
+      })();
+
+      io.to('admin-room').emit('admin-refresh');
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Gagal membatalkan sesi' });
+    }
+  });
+
+  // API: Admin Reject Cancellation (restore pending_cancellation → ongoing)
+  app.post('/api/admin/sessions/:id/reject-cancel', async (req, res) => {
+    const { id } = req.params;
+    try {
+      const session = await db.prepare("SELECT * FROM sessions WHERE id = ? AND status = 'pending_cancellation'").get(id) as any;
+      if (!session) return res.status(404).json({ error: 'Tidak ada pengajuan pembatalan untuk sesi ini' });
+
+      await db.prepare("UPDATE sessions SET status = 'ongoing', cancelled_by = NULL WHERE id = ?").run(id);
+
+      await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+        session.jokies_id, 'system', 'Pembatalan Ditolak', `Admin menolak pengajuan pembatalan pesanan #${id}. Sesi dilanjutkan.`
+      );
+      await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+        session.user_id, 'system', 'Pembatalan Ditolak', `Admin menolak pengajuan pembatalan pesanan #${id}. Lanjutkan sesi.`
+      );
+
+      io.to('admin-room').emit('admin-refresh');
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Gagal menolak pembatalan' });
     }
   });
 
@@ -3087,6 +3745,46 @@ async function startServer() {
     }
   });
 
+  // ===== ORDER CHAT API =====
+
+  // GET /api/orders/:sessionId/chat - Get chat messages for an order
+  app.get('/api/orders/:sessionId/chat', requireAuth, async (req: any, res: any) => {
+    const sessionId = parseInt(req.params.sessionId, 10);
+    const userId = req.user.userId;
+
+    try {
+      // Verify the session exists and user is a participant
+      const session = await db.prepare('SELECT id, status, user_id, jokies_id FROM sessions WHERE id = ?').get(sessionId) as any;
+      if (!session) {
+        return res.status(404).json({ success: false, message: 'Sesi tidak ditemukan' });
+      }
+
+      // Check that user is either kijo (user_id) or jokies (jokies_id)
+      if (session.user_id !== userId && session.jokies_id !== userId) {
+        return res.status(403).json({ success: false, message: 'Anda bukan peserta sesi ini' });
+      }
+
+      // Don't allow chat on pending orders
+      if (session.status === 'pending') {
+        return res.status(403).json({ success: false, message: 'Chat belum tersedia untuk pesanan pending' });
+      }
+
+      // Fetch messages with sender username
+      const messages = await db.prepare(`
+        SELECT oc.id, oc.session_id, oc.sender_id, oc.message, oc.created_at, u.username AS sender_username
+        FROM order_chats oc
+        JOIN users u ON u.id = oc.sender_id
+        WHERE oc.session_id = ?
+        ORDER BY oc.created_at ASC
+      `).all(sessionId) as any[];
+
+      res.json({ success: true, messages });
+    } catch (error) {
+      console.error('[OrderChat] Error fetching messages:', error);
+      res.status(500).json({ success: false, message: 'Gagal mengambil pesan chat' });
+    }
+  });
+
   // Catch-all for API routes that don't match (must be registered after all API routes)
   app.use((req, res, next) => {
     if (req.path.startsWith('/api/')) {
@@ -3116,7 +3814,67 @@ async function startServer() {
     app.use(express.static('dist'));
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  // --- Socket.io + HTTP Server Setup ---
+  const httpServer = http.createServer(app);
+  const io = new SocketServer(httpServer, { cors: { origin: '*' } });
+
+  // Content censorship: block phone numbers and image URLs
+  function censorMessage(msg: string): string {
+    // Block phone numbers (Indonesian format and international)
+    let censored = msg.replace(/(\+?\d{1,4}[\s-]?)?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}/g, '[nomor disensor]');
+    // Block image URLs
+    censored = censored.replace(/https?:\/\/\S+\.(jpg|jpeg|png|gif|webp|bmp|svg)/gi, '[gambar disensor]');
+    // Block data URIs
+    censored = censored.replace(/data:image\/[^;]+;base64,[^\s]+/gi, '[gambar disensor]');
+    // Block common image hostnames
+    censored = censored.replace(/https?:\/\/(imgur\.com|postimg|ibb\.co|prnt\.sc)[^\s]*/gi, '[gambar disensor]');
+    return censored;
+  }
+
+  io.on('connection', (socket) => {
+    socket.on('join-order-chat', (sessionId: string) => {
+      socket.join(`order-chat-${sessionId}`);
+    });
+
+    socket.on('leave-order-chat', (sessionId: string) => {
+      socket.leave(`order-chat-${sessionId}`);
+    });
+
+    socket.on('join-admin-room', () => {
+      socket.join('admin-room');
+    });
+
+    socket.on('leave-admin-room', () => {
+      socket.leave('admin-room');
+    });
+
+    socket.on('send-order-message', async (data: { sessionId: number; senderId: number; message: string }) => {
+      try {
+        // Verify the session exists and is not pending/completed/cancelled
+        const session = await db.prepare('SELECT id, status, user_id, jokies_id FROM sessions WHERE id = ?').get(data.sessionId) as any;
+        if (!session) return;
+        if (['pending', 'completed', 'cancelled'].includes(session.status)) return;
+        // Verify sender is a participant
+        if (session.user_id !== data.senderId && session.jokies_id !== data.senderId) return;
+
+        // Censor phone numbers and image URLs
+        const censored = censorMessage(data.message);
+        // Save to DB
+        await db.prepare('INSERT INTO order_chats (session_id, sender_id, message) VALUES (?, ?, ?)').run(data.sessionId, data.senderId, censored);
+        // Broadcast to room
+        io.to(`order-chat-${data.sessionId}`).emit('new-order-message', {
+          session_id: data.sessionId,
+          sender_id: data.senderId,
+          message: censored,
+          created_at: new Date().toISOString()
+        });
+      } catch (err) {
+        console.error('[OrderChat] Error sending message:', err);
+      }
+    });
+  });
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

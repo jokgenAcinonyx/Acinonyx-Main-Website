@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Package, Clock, DollarSign, Trash2, ChevronRight, LayoutGrid, Settings, Save, CheckCircle2, Calendar as CalendarIcon, Coffee, Users, Power, AlertCircle, Eye, EyeOff, Eraser, Archive, ArchiveRestore, ChevronDown, Gamepad2 } from 'lucide-react';
+import { Plus, Package, Clock, DollarSign, Trash2, ChevronRight, LayoutGrid, Settings, Save, CheckCircle2, Calendar as CalendarIcon, Coffee, Users, Power, AlertCircle, Eye, EyeOff, Eraser, Archive, ArchiveRestore, ChevronDown, Gamepad2, Copy } from 'lucide-react';
 import { RANKS } from '../constants';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
+import { useAlert } from './AlertContext';
 
 interface PackageData {
   id: number;
@@ -63,12 +64,14 @@ interface PackageItemProps {
   onEdit: () => void;
   onArchive: (e: React.MouseEvent) => void | Promise<void>;
   onDelete: (e: React.MouseEvent) => void | Promise<void>;
+  overtimeWarning?: boolean;
 }
 
-function PackageItem({ pkg, onEdit, onArchive, onDelete }: PackageItemProps) {
+function PackageItem({ pkg, onEdit, onArchive, onDelete, overtimeWarning }: PackageItemProps) {
   return (
-    <div className={`bg-bg-main border border-border-main rounded-xl p-4 flex items-center justify-between group hover:border-orange-primary/30 transition-all ${pkg.archived === 1 ? 'opacity-50 grayscale' : ''}`}>
-      <div className="space-y-1 flex-1 min-w-0 mr-2">
+    <div className={`bg-bg-main border rounded-xl p-4 flex flex-col group hover:border-orange-primary/30 transition-all ${pkg.archived === 1 ? 'opacity-50 grayscale' : ''} ${overtimeWarning ? 'border-red-500/60 shadow-[0_0_8px_rgba(239,68,68,0.15)]' : 'border-border-main'}`}>
+      <div className="flex items-center justify-between flex-1">
+        <div className="space-y-1 flex-1 min-w-0 mr-2">
         <div className="flex flex-col mb-1">
           <span className="text-[11px] font-bold text-text-muted uppercase tracking-widest">
             {pkg.package_type} {pkg.package_type === 'VIP' && `• ${pkg.min_players}-${pkg.max_players} PEMAIN`} {pkg.rank && `• ${pkg.rank}`}
@@ -110,11 +113,20 @@ function PackageItem({ pkg, onEdit, onArchive, onDelete }: PackageItemProps) {
           <Trash2 size={14} />
         </button>
       </div>
+      </div>
+      {overtimeWarning && (
+        <div className="mt-2 pt-2 border-t border-red-500/20">
+          <span className="text-[10px] font-bold text-red-400 uppercase tracking-widest">
+            ⚠ Durasi paket melebihi jam aktif + istirahat
+          </span>
+        </div>
+      )}
     </div>
   );
 }
 
 export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) {
+  const { showAlert } = useAlert();
   const [categories, setCategories] = useState<CategoryData[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddCategory, setShowAddCategory] = useState(false);
@@ -174,7 +186,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
   const [isOperationalOpen, setIsOperationalOpen] = useState(false);
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [showAddHoliday, setShowAddHoliday] = useState(false);
-  const [newHoliday, setNewHoliday] = useState({ start_date: '', end_date: '', reason: '' });
+  const [newHoliday, setNewHoliday] = useState({ start_date: '', start_time: '00:00', end_date: '', end_time: '', reason: '' });
 
   const [activeCategoryId, setActiveCategoryId] = useState<number | null>(null);
   const [showAddPackage, setShowAddPackage] = useState(false);
@@ -294,11 +306,11 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
   const handleAddCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (gameAccounts.length === 0) {
-      alert('ANDA HARUS MENDAFTARKAN AKUN GAME TERLEBIH DAHULU DI MENU AKUN SEBELUM MEMBUAT ETALASE!');
+      showAlert('ANDA HARUS MENDAFTARKAN AKUN GAME TERLEBIH DAHULU DI MENU AKUN SEBELUM MEMBUAT ETALASE!', 'warning');
       return;
     }
     if (!newCategoryName.trim()) {
-      alert('Nama kategori tidak boleh kosong!');
+      showAlert('Nama kategori tidak boleh kosong!', 'warning');
       return;
     }
 
@@ -306,10 +318,14 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
       const boostingAccounts = gameAccounts.filter(acc => acc.account_type === 'boosting' && acc.nickname !== 'New Kijo' && acc.game_name === selectedGame);
       const finalAccountId = boostingAccounts.length === 1 ? boostingAccounts[0].id : selectedGameAccountId;
 
+      if (boostingAccounts.length > 1 && !finalAccountId) {
+        showAlert('Pilih akun boosting untuk kategori ini!', 'warning');
+        return;
+      }
+
       const url = editingCategory ? `/api/kijo/categories/${editingCategory.id}` : '/api/kijo/categories';
-      const res = await fetch(url, {
+      const res = await fetchWithAuth(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           userId: user.id, 
           name: newCategoryName,
@@ -334,11 +350,11 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
   const handleAddPackage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (gameAccounts.length === 0) {
-      alert('ANDA HARUS MENDAFTARKAN AKUN GAME TERLEBIH DAHULU DI MENU AKUN SEBELUM MEMBUAT PAKET!');
+      showAlert('ANDA HARUS MENDAFTARKAN AKUN GAME TERLEBIH DAHULU DI MENU AKUN SEBELUM MEMBUAT PAKET!', 'warning');
       return;
     }
     if (!activeCategoryId || !newPackage.name.trim() || !newPackage.price) {
-      alert('Semua field paket harus diisi dengan benar!');
+      showAlert('Semua field paket harus diisi dengan benar!', 'warning');
       return;
     }
 
@@ -347,12 +363,12 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
     const extraDurationMins = (parseInt(newPackage.extra_duration_hours) || 0) * 60 + (parseInt(newPackage.extra_duration_minutes) || 0);
 
     if (priceNum <= 0) {
-      alert('Harga paket harus lebih dari 0!');
+      showAlert('Harga paket harus lebih dari 0!', 'warning');
       return;
     }
 
     if (durationMins <= 0) {
-      alert('Durasi paket harus lebih dari 0 menit!');
+      showAlert('Durasi paket harus lebih dari 0 menit!', 'warning');
       return;
     }
 
@@ -379,6 +395,16 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
         })
       });
       if (res.ok) {
+        // Check overtime: compare only against active work window
+        const [wsh, wsm] = (operational.work_start || '08:00').split(':').map(Number);
+        const [weh, wem] = (operational.work_end || '22:00').split(':').map(Number);
+        let workMins = (weh * 60 + wem) - (wsh * 60 + wsm);
+        if (workMins <= 0) workMins += 24 * 60;
+        if (durationMins > workMins) {
+          const dh = Math.floor(durationMins / 60), dm = durationMins % 60;
+          const ah = Math.floor(workMins / 60), am = workMins % 60;
+          showAlert(`Paket disimpan, tapi durasi (${dh}j ${dm}m) melebihi jam aktif (${ah}j ${am}m). Paket ini ditandai overtime.`, 'warning');
+        }
         setNewPackage({ 
           name: '', 
           price: '', 
@@ -419,15 +445,15 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
       console.log('[CLIENT] Delete package response:', data);
       if (res.ok && data.success) {
         console.log('[CLIENT] Package deleted successfully');
-        alert('Paket berhasil dihapus (Smart Delete).');
+        showAlert('Paket berhasil dihapus (Smart Delete).', 'success');
         await fetchData();
       } else {
         console.error('[CLIENT] Delete package failed:', data);
-        alert(`Gagal menghapus paket: ${data.message || 'Terjadi kesalahan server'}`);
+        showAlert(`Gagal menghapus paket: ${data.message || 'Terjadi kesalahan server'}`, 'error');
       }
     } catch (err) {
       console.error('[CLIENT] Failed to delete package:', err);
-      alert('Gagal menghubungi server untuk menghapus paket');
+      showAlert('Gagal menghubungi server untuk menghapus paket', 'error');
     }
   };
 
@@ -458,15 +484,15 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
       console.log('[CLIENT] Delete category response:', data);
       if (res.ok && data.success) {
         console.log('[CLIENT] Category deleted successfully');
-        alert('Kategori dan paket di dalamnya berhasil dihapus (Smart Delete).');
+        showAlert('Kategori dan paket di dalamnya berhasil dihapus (Smart Delete).', 'success');
         await fetchData();
       } else {
         console.error('[CLIENT] Delete category failed:', data);
-        alert(`Gagal menghapus kategori: ${data.message || 'Terjadi kesalahan server'}`);
+        showAlert(`Gagal menghapus kategori: ${data.message || 'Terjadi kesalahan server'}`, 'error');
       }
     } catch (err) {
       console.error('[CLIENT] Failed to delete category:', err);
-      alert('Gagal menghubungi server untuk menghapus kategori');
+      showAlert('Gagal menghubungi server untuk menghapus kategori', 'error');
     }
   };
 
@@ -483,11 +509,11 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
       } else {
         const data = await res.json();
         console.error('[CLIENT] Clear packages failed:', data);
-        alert(`Gagal mengosongkan paket: ${data.message || 'Terjadi kesalahan server'}`);
+        showAlert(`Gagal mengosongkan paket: ${data.message || 'Terjadi kesalahan server'}`, 'error');
       }
     } catch (err) {
       console.error('[CLIENT] Failed to clear packages:', err);
-      alert('Gagal menghubungi server untuk mengosongkan paket');
+      showAlert('Gagal menghubungi server untuk mengosongkan paket', 'error');
     }
   };
 
@@ -508,15 +534,23 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
 
   const handleAddHoliday = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!newHoliday.start_date) {
+      showAlert('Tanggal mulai libur wajib diisi!', 'warning');
+      return;
+    }
+    const startDatetime = `${newHoliday.start_date} ${newHoliday.start_time || '00:00'}:00`;
+    const endDatetime = newHoliday.end_date
+      ? `${newHoliday.end_date} ${newHoliday.end_time || '23:59'}:59`
+      : null;
     try {
       const res = await fetchWithAuth('/api/kijo/holidays', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id, ...newHoliday })
+        body: JSON.stringify({ userId: user.id, start_date: startDatetime, end_date: endDatetime, reason: newHoliday.reason })
       });
       if (res.ok) {
         setShowAddHoliday(false);
-        setNewHoliday({ start_date: '', end_date: '', reason: '' });
+        setNewHoliday({ start_date: '', start_time: '00:00', end_date: '', end_time: '', reason: '' });
         fetchData();
       }
     } catch (err) {
@@ -530,13 +564,13 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
       const res = await fetchWithAuth(`/api/kijo/holidays/${id}`, { method: 'DELETE' });
       if (res.ok) {
         fetchData();
-        alert('Jadwal libur berhasil dibatalkan.');
+        showAlert('Jadwal libur berhasil dibatalkan.', 'success');
       } else {
-        alert('Gagal membatalkan jadwal libur.');
+        showAlert('Gagal membatalkan jadwal libur.', 'error');
       }
     } catch (err) {
       console.error('Failed to delete holiday');
-      alert('Terjadi kesalahan saat menghubungi server.');
+      showAlert('Terjadi kesalahan saat menghubungi server.', 'error');
     }
   };
 
@@ -545,7 +579,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
     const workEnd = operational.work_end;
 
     if (workStart === workEnd) {
-      alert('KRITERIA TIDAK TERPENUHI: Jam mulai dan jam selesai kerja tidak boleh sama.');
+      showAlert('KRITERIA TIDAK TERPENUHI: Jam mulai dan jam selesai kerja tidak boleh sama.', 'warning');
       return;
     }
 
@@ -568,7 +602,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
     } catch (err) {
       console.error('Failed to update operational settings');
       setSaveStatus('error');
-      alert('Terjadi kesalahan koneksi saat memperbarui pengaturan.');
+      showAlert('Terjadi kesalahan koneksi saat memperbarui pengaturan.', 'error');
       setTimeout(() => setSaveStatus('idle'), 3000);
     }
   };
@@ -635,7 +669,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                 : [];
               const boostingCount = realBoostingAccounts.length;
               if (boostingCount === 0) {
-                alert('ANDA HARUS MENDAFTARKAN AKUN BOOSTING TERLEBIH DAHULU DI MENU AKUN SEBELUM MEMBUAT KATEGORI!');
+                showAlert('ANDA HARUS MENDAFTARKAN AKUN BOOSTING TERLEBIH DAHULU DI MENU AKUN SEBELUM MEMBUAT KATEGORI!', 'warning');
                 return;
               }
               if (boostingCount === 1) {
@@ -736,12 +770,12 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                   <CalendarIcon size={14} />
                   <span className="text-xs font-bold uppercase tracking-wider">Jadwal Mingguan</span>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="grid grid-cols-7 gap-1.5">
                   {DAYS.map(day => (
                     <button
                       key={day}
                       onClick={() => toggleDay(day)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                      className={`px-1 py-2 rounded-lg text-[11px] font-bold transition-all border text-center ${
                         operational.weekly_days.includes(day)
                           ? 'bg-orange-primary border-orange-primary text-black'
                           : 'bg-bg-main border-border-main text-text-muted hover:border-text-muted/50'
@@ -801,22 +835,36 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
               </div>
               <div className="flex items-center gap-4">
                 <div className="relative flex-1">
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     inputMode="numeric"
-                    placeholder="0"
+                    placeholder="1"
                     className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm font-bold pr-12"
                     value={operational.break_time === 0 ? '' : operational.break_time}
                     onFocus={(e) => e.target.select()}
                     onChange={(e) => {
-                      const val = e.target.value === '' ? 0 : parseInt(e.target.value);
-                      setOperational({...operational, break_time: isNaN(val) ? 0 : val});
+                      const raw = e.target.value.replace(/[^0-9]/g, '');
+                      if (raw === '') {
+                        setOperational({...operational, break_time: 0});
+                        return;
+                      }
+                      const val = parseInt(raw, 10);
+                      if (val === 0) {
+                        showAlert('Jam istirahat tidak boleh 0!', 'warning');
+                        return;
+                      }
+                      setOperational({...operational, break_time: val});
+                    }}
+                    onBlur={() => {
+                      if (!operational.break_time || operational.break_time < 1) {
+                        setOperational({...operational, break_time: 1});
+                      }
                     }}
                   />
                   <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-text-muted">JAM</span>
                 </div>
               </div>
-              <p className="text-xs text-text-muted italic">Waktu istirahat otomatis setelah setiap pesanan selesai.</p>
+              <p className="text-xs text-text-muted italic">Minimal 1 jam istirahat wajib setelah setiap pesanan selesai.</p>
             </div>
 
             {/* Slot Limit */}
@@ -902,6 +950,47 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
           </div>
           </div>
 
+          {/* Waktu Libur */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-text-main/70">
+                <CalendarIcon size={14} />
+                <span className="text-xs font-bold uppercase tracking-wider">Waktu Libur</span>
+              </div>
+              <button
+                onClick={() => setShowAddHoliday(true)}
+                className="flex items-center gap-1.5 text-xs font-bold text-orange-primary hover:text-orange-primary/80 transition-all border border-orange-primary/30 rounded-lg px-3 py-1.5 hover:bg-orange-primary/5"
+              >
+                <Plus size={12} /> Tambah
+              </button>
+            </div>
+            {holidays.length === 0 ? (
+              <p className="text-xs text-text-muted italic px-1">Tidak ada jadwal libur.</p>
+            ) : (
+              <div className="space-y-2">
+                {holidays.map(h => (
+                  <div key={h.id} className="flex items-start justify-between gap-3 bg-bg-main border border-blue-500/20 rounded-xl px-3 py-2.5">
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-text-main truncate">{h.reason || 'Libur'}</p>
+                      <p className="text-xs text-text-muted mt-0.5">
+                        {new Date(h.start_date).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        {h.end_date
+                          ? ` → ${new Date(h.end_date).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                          : ' → Sampai online'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteHoliday(h.id)}
+                      className="text-text-muted hover:text-red-400 transition-colors shrink-0 mt-0.5"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="bg-orange-primary/5 border border-orange-primary/20 rounded-2xl p-6 relative overflow-hidden shadow-sm">
             <div className="relative z-10">
               <div className="flex items-center gap-2 mb-3">
@@ -953,7 +1042,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                             : [];
                           const boostingCount = realBoostingAccounts.length;
                           if (boostingCount === 0) {
-                            alert('ANDA HARUS MENDAFTARKAN AKUN BOOSTING TERLEBIH DAHULU DI MENU AKUN SEBELUM MEMBUAT KATEGORI!');
+                            showAlert('ANDA HARUS MENDAFTARKAN AKUN BOOSTING TERLEBIH DAHULU DI MENU AKUN SEBELUM MEMBUAT KATEGORI!', 'warning');
                             return;
                           }
                           if (boostingCount === 1) {
@@ -997,6 +1086,19 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
 
                           return (
                             <div key={accId || 'no-account'} className="space-y-4">
+                              {!account && accId && (
+                                <div className="flex flex-col gap-1.5 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-xl ml-2">
+                                  <div className="flex items-center gap-2">
+                                    <AlertCircle size={14} className="text-red-400 shrink-0" />
+                                    <span className="text-xs font-bold text-red-400 uppercase tracking-widest">
+                                      Akun Boosting Dihapus — Kategori Tersembunyi dari Marketplace
+                                    </span>
+                                  </div>
+                                  <span className="text-xs text-red-400/70 ml-[22px]">
+                                    Klik <span className="font-bold">⚙</span> pada tiap kategori di bawah untuk menautkan ulang ke akun aktif.
+                                  </span>
+                                </div>
+                              )}
                               {account && boostingCount > 1 && (
                                 <div className="flex items-center gap-2 px-4 py-2 bg-bg-sidebar/50 border border-border-main rounded-xl w-fit ml-2">
                                   <Gamepad2 size={14} className="text-orange-primary" />
@@ -1087,12 +1189,24 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                       <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
                                         <div className="grid grid-cols-2 gap-1 md:flex md:items-center md:gap-2">
                                           <button 
-                                            onClick={(e) => toggleCategoryVisibility(e, category.id, category.visible)}
-                                            title={category.visible === 1 ? 'Sembunyikan Kategori' : 'Tampilkan Kategori'}
+                                            onClick={(e) => {
+                                              if (!account && category.game_account_id) {
+                                                showAlert('Tidak dapat menampilkan kategori. Tautkan ke akun boosting aktif terlebih dahulu.', 'warning');
+                                                return;
+                                              }
+                                              if (!category.game_account_id) {
+                                                showAlert('Tidak dapat menampilkan kategori. Tambahkan akun boosting ke kategori ini terlebih dahulu.', 'warning');
+                                                return;
+                                              }
+                                              toggleCategoryVisibility(e, category.id, category.visible);
+                                            }}
+                                            title={!account && category.game_account_id ? 'Akun dihapus — tautkan ulang terlebih dahulu' : !category.game_account_id ? 'Tambahkan akun ke kategori terlebih dahulu' : category.visible === 1 ? 'Sembunyikan Kategori' : 'Tampilkan Kategori'}
                                             className={`p-1.5 md:p-2 rounded-lg border transition-all ${
-                                              category.visible === 1 
-                                                ? 'text-text-muted border-border-main hover:text-text-main hover:bg-bg-main' 
-                                                : 'text-orange-primary border-orange-primary/30 bg-orange-primary/5 hover:bg-orange-primary/10'
+                                              (!account && category.game_account_id) || !category.game_account_id
+                                                ? 'text-text-muted/40 border-border-main/50 cursor-not-allowed opacity-50'
+                                                : category.visible === 1 
+                                                  ? 'text-text-muted border-border-main hover:text-text-main hover:bg-bg-main' 
+                                                  : 'text-orange-primary border-orange-primary/30 bg-orange-primary/5 hover:bg-orange-primary/10'
                                             }`}
                                           >
                                             {category.visible === 1 ? <EyeOff size={12} className="md:size-4" /> : <Eye size={12} className="md:size-4" />}
@@ -1104,7 +1218,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                               setEditingCategory(category);
                                               setNewCategoryName(category.name);
                                               setSelectedGame(category.game_name);
-                                              setSelectedGameAccountId(category.game_account_id || '');
+                                              setSelectedGameAccountId(account ? (category.game_account_id || '') : '');
                                               setSelectedRank(category.rank || '');
                                               setShowAddCategory(true);
                                             }}
@@ -1120,6 +1234,28 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                             className="p-1.5 md:p-2 text-text-muted border border-border-main rounded-lg hover:text-orange-primary hover:bg-orange-primary/5 transition-all"
                                           >
                                             <Eraser size={12} className="md:size-4" />
+                                          </button>
+
+                                          <button 
+                                            onClick={async (e) => {
+                                              e.stopPropagation();
+                                              try {
+                                                const res = await fetchWithAuth(`/api/kijo/categories/${category.id}/duplicate`, { method: 'POST' });
+                                                if (res.ok) {
+                                                  showAlert('Kategori berhasil diduplikasi!', 'success');
+                                                  fetchData();
+                                                } else {
+                                                  const data = await res.json();
+                                                  showAlert(data.message || 'Gagal menduplikasi kategori', 'error');
+                                                }
+                                              } catch (err) {
+                                                showAlert('Gagal menghubungi server', 'error');
+                                              }
+                                            }}
+                                            title="Duplikasi Kategori"
+                                            className="p-1.5 md:p-2 text-text-muted border border-border-main rounded-lg hover:text-orange-primary hover:bg-orange-primary/5 transition-all"
+                                          >
+                                            <Copy size={12} className="md:size-4" />
                                           </button>
 
                                           <button 
@@ -1147,9 +1283,29 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                     </div>
 
                                     <div className={`p-6 transition-opacity ${category.visible === 1 ? 'opacity-100' : 'opacity-40'}`}>
-                                      {category.packages.length === 0 ? (
-                                        <p className="text-text-muted text-xs italic text-center py-4">Belum ada paket di kategori ini.</p>
-                                      ) : (
+                                      {(() => {
+                                        // Overtime check: only compare against active work window
+                                        const [wsh, wsm] = (operational.work_start || '08:00').split(':').map(Number);
+                                        const [weh, wem] = (operational.work_end || '22:00').split(':').map(Number);
+                                        let workMins = (weh * 60 + wem) - (wsh * 60 + wsm);
+                                        if (workMins <= 0) workMins += 24 * 60; // overnight
+                                        const isOvertime = (pkg: PackageData) => pkg.duration > workMins && pkg.archived !== 1;
+                                        
+                                        const overtimePkgs = category.packages.filter(p => isOvertime(p));
+                                        
+                                        return (
+                                          <>
+                                            {overtimePkgs.length > 0 && (
+                                              <div className="mb-4 flex items-start gap-2 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-xl">
+                                                <AlertCircle size={14} className="text-red-400 shrink-0 mt-0.5" />
+                                                <span className="text-xs text-red-400">
+                                                  <strong className="uppercase tracking-wider">Peringatan:</strong> {overtimePkgs.map(p => `"${p.name}"`).join(', ')} memiliki durasi melebihi jam aktif ({Math.floor(workMins / 60)}j{workMins % 60 > 0 ? `${workMins % 60}m` : ''}).
+                                                </span>
+                                              </div>
+                                            )}
+                                            {category.packages.length === 0 ? (
+                                              <p className="text-text-muted text-xs italic text-center py-4">Belum ada paket di kategori ini.</p>
+                                            ) : (
                                         <>
                                           {category.packages.filter(p => p.package_type === 'SOLO').length > 0 && (
                                             <div className="space-y-4">
@@ -1161,7 +1317,8 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                                 {category.packages.filter(p => p.package_type === 'SOLO').map((pkg) => (
                                                   <PackageItem 
                                                     key={pkg.id} 
-                                                    pkg={pkg} 
+                                                    pkg={pkg}
+                                                    overtimeWarning={isOvertime(pkg)} 
                                                     onEdit={() => {
                                                       setEditingPackage(pkg);
                                                       const h = Math.floor(pkg.duration / 60);
@@ -1214,7 +1371,8 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                                 {category.packages.filter(p => p.package_type === 'VIP').map((pkg) => (
                                                   <PackageItem 
                                                     key={pkg.id} 
-                                                    pkg={pkg} 
+                                                    pkg={pkg}
+                                                    overtimeWarning={isOvertime(pkg)} 
                                                     onEdit={() => {
                                                       setEditingPackage(pkg);
                                                       const h = Math.floor(pkg.duration / 60);
@@ -1254,6 +1412,9 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                           )}
                                         </>
                                       )}
+                                          </>
+                                        );
+                                      })()}
                                     </div>
                                   </motion.div>
                                 ))}
@@ -1743,21 +1904,23 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
               className="relative w-full max-w-md bg-bg-sidebar border border-border-main rounded-2xl p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto allow-scrollbar"
             >
               <h3 className="text-xl md:text-2xl font-bold text-text-main mb-6">Jadwal <span className="text-orange-primary">Libur.</span></h3>
-              <form onSubmit={handleAddHoliday} className="space-y-4">
+              <form onSubmit={handleAddHoliday} className="space-y-5">
                 <div className="space-y-1.5">
                   <label className="text-xs font-bold text-text-muted uppercase tracking-widest ml-1">Alasan Libur</label>
                   <input 
                     type="text" 
                     required
-                    placeholder="Alasan Libur"
+                    placeholder="Contoh: Sakit, Perjalanan, Libur Nasional..."
                     className="w-full bg-bg-main border border-border-main rounded-xl py-3 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm"
                     value={newHoliday.reason}
                     onChange={(e) => setNewHoliday({...newHoliday, reason: e.target.value})}
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-text-muted uppercase tracking-widest ml-1">Mulai</label>
+
+                {/* Start datetime */}
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-muted uppercase tracking-widest ml-1">Mulai <span className="text-orange-primary">*</span></label>
+                  <div className="grid grid-cols-2 gap-3">
                     <input 
                       type="date" 
                       required
@@ -1765,18 +1928,61 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                       value={newHoliday.start_date}
                       onChange={(e) => setNewHoliday({...newHoliday, start_date: e.target.value})}
                     />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-text-muted uppercase tracking-widest ml-1">Selesai</label>
-                    <input 
-                      type="date" 
-                      required
-                      className="w-full bg-bg-main border border-border-main rounded-xl py-3 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm"
-                      value={newHoliday.end_date}
-                      onChange={(e) => setNewHoliday({...newHoliday, end_date: e.target.value})}
-                    />
+                    <div className="relative">
+                      <select
+                        className="w-full bg-bg-main border border-border-main rounded-xl py-3 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm appearance-none cursor-pointer font-bold"
+                        value={newHoliday.start_time}
+                        onChange={(e) => setNewHoliday({...newHoliday, start_time: e.target.value})}
+                      >
+                        {TIME_OPTIONS.map(t => (
+                          <option key={t} value={t} className="bg-bg-sidebar text-text-main">{t}</option>
+                        ))}
+                      </select>
+                      <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
+                    </div>
                   </div>
                 </div>
+
+                {/* End datetime (optional) */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between ml-1">
+                    <label className="text-xs font-bold text-text-muted uppercase tracking-widest">Selesai <span className="text-text-muted/60 normal-case font-normal">(opsional)</span></label>
+                    {newHoliday.end_date && (
+                      <button type="button" onClick={() => setNewHoliday({...newHoliday, end_date: '', end_time: ''})} className="text-xs text-text-muted hover:text-red-400 transition-colors">Hapus</button>
+                    )}
+                  </div>
+                  {!newHoliday.end_date ? (
+                    <div
+                      onClick={() => setNewHoliday({...newHoliday, end_date: newHoliday.start_date || new Date().toISOString().split('T')[0], end_time: '23:59'})}
+                      className="w-full bg-bg-main border border-dashed border-border-main rounded-xl py-3 px-4 text-text-muted text-sm cursor-pointer hover:border-orange-primary/50 transition-all text-center"
+                    >
+                      Sampai online — klik untuk set waktu selesai
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3">
+                      <input 
+                        type="date"
+                        className="w-full bg-bg-main border border-border-main rounded-xl py-3 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm"
+                        value={newHoliday.end_date}
+                        onChange={(e) => setNewHoliday({...newHoliday, end_date: e.target.value})}
+                      />
+                      <div className="relative">
+                        <select
+                          className="w-full bg-bg-main border border-border-main rounded-xl py-3 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm appearance-none cursor-pointer font-bold"
+                          value={newHoliday.end_time}
+                          onChange={(e) => setNewHoliday({...newHoliday, end_time: e.target.value})}
+                        >
+                          {TIME_OPTIONS.map(t => (
+                            <option key={t} value={t} className="bg-bg-sidebar text-text-main">{t}</option>
+                          ))}
+                        </select>
+                        <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
+                      </div>
+                    </div>
+                  )}
+                  <p className="text-xs text-text-muted italic px-1">Jika tidak diisi, kijo tetap libur sampai menekan tombol ON secara manual.</p>
+                </div>
+
                 <div className="flex gap-3 mt-6">
                   <button 
                     type="button"

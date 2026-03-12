@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Shield, CreditCard, Wallet, Zap, CheckCircle2, AlertCircle } from 'lucide-react';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
+import { useAlert } from './AlertContext';
 
 interface PaymentPageProps {
   user: any;
@@ -13,6 +14,7 @@ interface PaymentPageProps {
 }
 
 export default function PaymentPage({ user, kijo, pkg, bookingData, onBack, onSuccess }: PaymentPageProps) {
+  const { showAlert } = useAlert();
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentStep, setPaymentStep] = useState(1); // 1: Select Method, 2: Summary, 3: Processing, 4: Success
   const [selectedMethod, setSelectedMethod] = useState('Wallet');
@@ -67,6 +69,7 @@ export default function PaymentPage({ user, kijo, pkg, bookingData, onBack, onSu
           jokiesNickname: bookingData.nickname,
           jokiesGameId: bookingData.gameId,
           jokiesGameAccountId: bookingData.gameAccountId,
+          kijoGameAccountId: bookingData.kijoGameAccountId,
           categoryId: bookingData.categoryId,
           dynamic_data: bookingData.dynamic_data
         })
@@ -75,11 +78,11 @@ export default function PaymentPage({ user, kijo, pkg, bookingData, onBack, onSu
       if (res.ok) {
         setPaymentStep(4);
       } else {
-        alert('Gagal memproses pembayaran.');
+        showAlert('Gagal memproses pembayaran.', 'error');
         setPaymentStep(1);
       }
     } catch (error) {
-      alert('Terjadi kesalahan server.');
+      showAlert('Terjadi kesalahan server.', 'error');
       setPaymentStep(1);
     } finally {
       setIsProcessing(false);

@@ -14,6 +14,7 @@ import {
   Star
 } from 'lucide-react';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
+import { useAlert } from './AlertContext';
 
 interface KijoVerificationPageProps {
   user: any;
@@ -22,6 +23,7 @@ interface KijoVerificationPageProps {
 }
 
 export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVerificationPageProps) {
+  const { showAlert } = useAlert();
   const [step, setStep] = useState(1);
   const [availableGames, setAvailableGames] = useState<any[]>([]);
   const [desiredGame, setDesiredGame] = useState('');
@@ -55,7 +57,7 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
       const file = (e.target as HTMLInputElement).files?.[0];
       if (!file) return;
       if (file.size > 2 * 1024 * 1024) {
-        alert('Ukuran file maksimal 2MB');
+        showAlert('Ukuran file maksimal 2MB', 'warning');
         return;
       }
       const reader = new FileReader();
@@ -101,14 +103,14 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
       });
 
       if (res.ok) {
-        alert('Pengajuan Anda telah dikirim! Admin akan memverifikasi data Anda dalam 1-3 hari kerja.');
+        showAlert('Pengajuan Anda telah dikirim! Admin akan memverifikasi data Anda dalam 1-3 hari kerja.', 'success');
         onSuccess();
       } else {
         const data = await res.json();
-        alert(data.message || 'Gagal mengirim pengajuan.');
+        showAlert(data.message || 'Gagal mengirim pengajuan.', 'error');
       }
     } catch (error) {
-      alert('Terjadi kesalahan server.');
+      showAlert('Terjadi kesalahan server.', 'error');
     } finally {
       setIsSubmitting(false);
     }

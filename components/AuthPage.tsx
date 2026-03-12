@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { User, Lock, Mail, ArrowRight, Sparkles, ShieldCheck, Phone, Calendar, CheckCircle2, MessageSquare } from 'lucide-react';
+import { useAlert } from './AlertContext';
 
 interface AuthPageProps {
   onLogin: (user: any) => void;
 }
 
 export default function AuthPage({ onLogin }: AuthPageProps) {
+  const { showAlert } = useAlert();
   const [isLogin, setIsLogin] = useState(true);
   const [isForgot, setIsForgot] = useState(false);
   const [forgotStep, setForgotStep] = useState(1); // 1: Email, 2: OTP, 3: New Password
@@ -93,8 +95,8 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
     const emojiRegex = /\p{Extended_Pictographic}/u;
     if (emojiRegex.test(pass)) return false;
 
-    // Bebaskan simbol, minimal 8 karakter
-    return pass.length >= 8;
+    // Require min 8 chars, uppercase, lowercase, number, symbol
+    return pass.length >= 8 && /[A-Z]/.test(pass) && /[a-z]/.test(pass) && /[0-9]/.test(pass) && /[^A-Za-z0-9]/.test(pass);
   };
 
   const validateName = (name: string) => {
@@ -128,12 +130,12 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
         return true;
       } else {
         setError(data.message);
-        alert(`Gagal mengirim OTP: ${data.message}`);
+        showAlert(`Gagal mengirim OTP: ${data.message}`);
         return false;
       }
     } catch (err) {
       setError('Gagal mengirim OTP');
-      alert('Gagal mengirim OTP. Silakan periksa koneksi Anda.');
+      showAlert('Gagal mengirim OTP. Silakan periksa koneksi Anda.');
       return false;
     } finally {
       setLoading(false);
@@ -162,7 +164,7 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
         }
       } else if (forgotStep === 3) {
         if (!validatePassword(formData.password)) {
-          setError('Password minimal 8 karakter dan tidak boleh mengandung emoji');
+          setError('Password minimal 8 karakter dengan huruf besar, kecil, angka, dan simbol (tanpa emoji)');
           setLoading(false);
           return;
         }
@@ -177,7 +179,7 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
         });
         const data = await res.json();
         if (data.success) {
-          alert('Password berhasil diperbarui, silakan login kembali');
+          showAlert('Password berhasil diperbarui, silakan login kembali', 'success');
           setIsForgot(false);
           setForgotStep(1);
           setIsLogin(true);
@@ -225,24 +227,24 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
           });
           const signupData = await signupRes.json();
           if (signupData.success) {
-            alert('Pendaftaran berhasil! Silakan login untuk melanjutkan.');
+            showAlert('Pendaftaran berhasil! Silakan login untuk melanjutkan.', 'success');
             setIsLogin(true);
             setStep(1);
             setFormData(initialFormData);
             setOtpValues(['', '', '', '', '', '']);
           } else {
             setError(signupData.message);
-            alert(`Gagal mendaftar: ${signupData.message}`);
+            showAlert(`Gagal mendaftar: ${signupData.message}`);
             setStep(1);
           }
         }
       } else {
         setError(data.message);
-        alert(`Verifikasi OTP gagal: ${data.message}`);
+        showAlert(`Verifikasi OTP gagal: ${data.message}`);
       }
     } catch (err) {
       setError('Gagal verifikasi OTP');
-      alert('Terjadi kesalahan saat verifikasi OTP.');
+      showAlert('Terjadi kesalahan saat verifikasi OTP.');
     } finally {
       setLoading(false);
     }
@@ -271,11 +273,11 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
           if (sent) setStep(2);
         } else {
           setError(data.message);
-          alert(`Login gagal: ${data.message}`);
+          showAlert(`Login gagal: ${data.message}`);
         }
       } catch (err) {
         setError('Kesalahan koneksi');
-        alert('Gagal terhubung ke server. Silakan coba lagi.');
+        showAlert('Gagal terhubung ke server. Silakan coba lagi.');
       } finally {
         setLoading(false);
       }
@@ -284,25 +286,25 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
       if (!validateEmail(formData.email)) {
         const msg = 'Hanya domain @gmail.com dan @yahoo.com yang diizinkan';
         setError(msg);
-        alert(msg);
+        showAlert(msg);
         return;
       }
       if (!validatePassword(formData.password)) {
-        const msg = 'Password minimal 8 karakter dengan kombinasi huruf besar, kecil, angka, dan simbol';
+        const msg = 'Password minimal 8 karakter dengan huruf besar, kecil, angka, dan simbol (tanpa emoji)';
         setError(msg);
-        alert(msg);
+        showAlert(msg);
         return;
       }
       if (!validateName(formData.full_name)) {
         const msg = 'Nama asli tidak boleh mengandung angka atau simbol';
         setError(msg);
-        alert(msg);
+        showAlert(msg);
         return;
       }
       if (!validateAge(formData.birth_date)) {
         const msg = 'Usia minimal adalah 17 tahun';
         setError(msg);
-        alert(msg);
+        showAlert(msg);
         return;
       }
       
@@ -489,21 +491,22 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                       {/* Password Strength Indicator */}
                       <div className="px-1 pt-2 space-y-2">
                         <div className="flex gap-1 h-1">
-                          {[1, 2, 3, 4].map((level) => {
+                          {[1, 2, 3, 4, 5].map((level) => {
                             const hasEmoji = /\p{Extended_Pictographic}/u.test(formData.password);
                             const strength = 
                               (formData.password.length >= 8 ? 1 : 0) +
-                              (formData.password.length >= 12 ? 1 : 0) +
-                              (/[^A-Za-z0-9]/.test(formData.password) && !hasEmoji ? 1 : 0) +
-                              (/[0-9]/.test(formData.password) ? 1 : 0);
+                              (/[A-Z]/.test(formData.password) ? 1 : 0) +
+                              (/[a-z]/.test(formData.password) ? 1 : 0) +
+                              (/[0-9]/.test(formData.password) ? 1 : 0) +
+                              (/[^A-Za-z0-9]/.test(formData.password) && !hasEmoji ? 1 : 0);
                             
                             let color = 'bg-border-main';
-                            if (level <= strength && !hasEmoji) {
-                              if (strength <= 1) color = 'bg-red-500';
-                              else if (strength <= 3) color = 'bg-yellow-500';
-                              else color = 'bg-green-500';
-                            } else if (hasEmoji) {
+                            if (hasEmoji) {
                               color = 'bg-red-500';
+                            } else if (level <= strength) {
+                              if (strength === 5) color = 'bg-green-500';
+                              else if (strength >= 3) color = 'bg-yellow-500';
+                              else color = 'bg-red-500';
                             }
                             
                             return <div key={level} className={`flex-1 rounded-full transition-all duration-500 ${color}`} />;
@@ -512,9 +515,10 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                         
                         <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                           <RequirementItem met={formData.password.length >= 8} label="Min. 8 Karakter" />
-                          <RequirementItem met={!/\p{Extended_Pictographic}/u.test(formData.password)} label="Tanpa Emoji" />
-                          <RequirementItem met={/[^A-Za-z0-9]/.test(formData.password) && !/\p{Extended_Pictographic}/u.test(formData.password)} label="Simbol Bebas" />
-                          <RequirementItem met={/[0-9]/.test(formData.password)} label="Angka (Opsional)" />
+                          <RequirementItem met={/[A-Z]/.test(formData.password)} label="Huruf Besar" />
+                          <RequirementItem met={/[a-z]/.test(formData.password)} label="Huruf Kecil" />
+                          <RequirementItem met={/[0-9]/.test(formData.password)} label="Angka" />
+                          <RequirementItem met={/[^A-Za-z0-9]/.test(formData.password) && !/\p{Extended_Pictographic}/u.test(formData.password)} label="Simbol" />
                         </div>
                       </div>
                     </div>
@@ -661,21 +665,22 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                         {/* Password Strength Gauge */}
                         <div className="px-1 pt-2 space-y-2">
                           <div className="flex gap-1 h-1">
-                            {[1, 2, 3, 4].map((level) => {
+                            {[1, 2, 3, 4, 5].map((level) => {
                               const hasEmoji = /\p{Extended_Pictographic}/u.test(formData.password);
                               const strength = 
                                 (formData.password.length >= 8 ? 1 : 0) +
-                                (formData.password.length >= 12 ? 1 : 0) +
-                                (/[^A-Za-z0-9]/.test(formData.password) && !hasEmoji ? 1 : 0) +
-                                (/[0-9]/.test(formData.password) ? 1 : 0);
+                                (/[A-Z]/.test(formData.password) ? 1 : 0) +
+                                (/[a-z]/.test(formData.password) ? 1 : 0) +
+                                (/[0-9]/.test(formData.password) ? 1 : 0) +
+                                (/[^A-Za-z0-9]/.test(formData.password) && !hasEmoji ? 1 : 0);
                               
                               let color = 'bg-border-main';
-                              if (level <= strength && !hasEmoji) {
-                                if (strength <= 1) color = 'bg-red-500';
-                                else if (strength <= 3) color = 'bg-yellow-500';
-                                else color = 'bg-green-500';
-                              } else if (hasEmoji) {
+                              if (hasEmoji) {
                                 color = 'bg-red-500';
+                              } else if (level <= strength) {
+                                if (strength === 5) color = 'bg-green-500';
+                                else if (strength >= 3) color = level <= 2 ? 'bg-yellow-500' : 'bg-yellow-500';
+                                else color = 'bg-red-500';
                               }
                               
                               return <div key={level} className={`flex-1 rounded-full transition-all duration-500 ${color}`} />;
@@ -684,9 +689,10 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                           
                           <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                             <RequirementItem met={formData.password.length >= 8} label="Min. 8 Karakter" />
-                            <RequirementItem met={!/\p{Extended_Pictographic}/u.test(formData.password)} label="Tanpa Emoji" />
-                            <RequirementItem met={/[^A-Za-z0-9]/.test(formData.password) && !/\p{Extended_Pictographic}/u.test(formData.password)} label="Simbol Bebas" />
-                            <RequirementItem met={/[0-9]/.test(formData.password)} label="Angka (Opsional)" />
+                            <RequirementItem met={/[A-Z]/.test(formData.password)} label="Huruf Besar" />
+                            <RequirementItem met={/[a-z]/.test(formData.password)} label="Huruf Kecil" />
+                            <RequirementItem met={/[0-9]/.test(formData.password)} label="Angka" />
+                            <RequirementItem met={/[^A-Za-z0-9]/.test(formData.password) && !/\p{Extended_Pictographic}/u.test(formData.password)} label="Simbol" />
                           </div>
                         </div>
                       </div>

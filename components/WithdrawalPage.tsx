@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Wallet, Shield, AlertCircle, CheckCircle2, CreditCard, Banknote, Landmark } from 'lucide-react';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
+import { useAlert } from './AlertContext';
 
 interface WithdrawalPageProps {
   user: any;
@@ -11,6 +12,7 @@ interface WithdrawalPageProps {
 }
 
 export default function WithdrawalPage({ user, mode, onBack, onSuccess }: WithdrawalPageProps) {
+  const { showAlert } = useAlert();
   const [step, setStep] = useState(1); // 1: Form, 2: Processing, 3: Success
   const [showTC, setShowTC] = useState(false);
   
@@ -33,11 +35,11 @@ export default function WithdrawalPage({ user, mode, onBack, onSuccess }: Withdr
   const handleWithdraw = async () => {
     const numericAmount = Number(amount);
     if (numericAmount < 20000) {
-      alert('Minimal penarikan adalah Rp 20.000');
+      showAlert('Minimal penarikan adalah Rp 20.000', 'warning');
       return;
     }
     if (numericAmount > balance) {
-      alert('Saldo tidak mencukupi');
+      showAlert('Saldo tidak mencukupi', 'warning');
       return;
     }
 
@@ -58,11 +60,11 @@ export default function WithdrawalPage({ user, mode, onBack, onSuccess }: Withdr
       if (res.ok) {
         setStep(3);
       } else {
-        alert(data.message || 'Gagal memproses penarikan');
+        showAlert(data.message || 'Gagal memproses penarikan', 'error');
         setStep(1);
       }
     } catch (error) {
-      alert('Terjadi kesalahan server');
+      showAlert('Terjadi kesalahan server', 'error');
       setStep(1);
     }
   };

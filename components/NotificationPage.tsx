@@ -27,9 +27,10 @@ interface Notification {
 
 interface NotificationPageProps {
   user: any;
+  onBadgeUpdate?: (count: number) => void;
 }
 
-export default function NotificationPage({ user }: NotificationPageProps) {
+export default function NotificationPage({ user, onBadgeUpdate }: NotificationPageProps) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
@@ -57,7 +58,12 @@ export default function NotificationPage({ user }: NotificationPageProps) {
     try {
       const res = await fetchWithAuth(`/api/kijo/notifications/${id}/read`, { method: 'POST' });
       if (res.ok) {
-        setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: 1 } : n));
+        setNotifications(prev => {
+          const updated = prev.map(n => n.id === id ? { ...n, is_read: 1 } : n);
+          const newUnreadCount = updated.filter(n => n.is_read === 0).length;
+          onBadgeUpdate?.(newUnreadCount);
+          return updated;
+        });
       }
     } catch (error) {
       console.error('Error marking as read:', error);
@@ -73,6 +79,7 @@ export default function NotificationPage({ user }: NotificationPageProps) {
       });
       if (res.ok) {
         setNotifications(prev => prev.map(n => ({ ...n, is_read: 1 })));
+        onBadgeUpdate?.(0);
       }
     } catch (error) {
       console.error('Error marking all as read:', error);
