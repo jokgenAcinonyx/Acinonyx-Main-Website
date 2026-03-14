@@ -1,0 +1,20 @@
+# MySQL connection settings
+DB_HOST=127.0.0.1
+DB_PORT=3307
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=acinonyx_db
+
+# Optional
+DB_CONNECTION_LIMIT=
+
+# Email OTP (Gmail SMTP)
+EMAIL_USER=
+EMAIL_FROM=
+EMAIL_PASS=
+
+# Google Cloud Storage
+GCS_PROJECT_ID=
+GCS_BUCKET_PROFIL=
+GCS_BUCKET_BUKTI=
+GCS_KEY_FILE_PATH=
