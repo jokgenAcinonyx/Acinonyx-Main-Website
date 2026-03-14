@@ -1195,7 +1195,7 @@ export default function App() {
 
         {view === 'kijo-store' && selectedKijoId !== null && <KijoStorePage user={user} kijoId={selectedKijoId} onBack={() => setView('marketplace')} onOrderSuccess={() => { setSelectedKijoId(null); setView('orders'); }} systemStatus={systemStatus} />}
         
-        {view === 'orders' && <OrdersPage user={user} globalGames={globalGames} />}
+        {view === 'orders' && <OrdersPage user={user} globalGames={globalGames} onGoToMarketplace={() => setView('marketplace')} />}
 
 
         {view === 'notifications' && <NotificationPage user={user} onBadgeUpdate={(count) => setUnreadNotifications(count)} />}
@@ -1579,7 +1579,7 @@ export default function App() {
           )}
         </AnimatePresence>
         
-        {view !== 'dashboard' && view !== 'etalase' && view !== 'notifications' && view !== 'traits' && view !== 'account' && view !== 'marketplace' && view !== 'orders' && (
+        {view !== 'dashboard' && view !== 'etalase' && view !== 'notifications' && view !== 'traits' && view !== 'account' && view !== 'marketplace' && view !== 'orders' && view !== 'kijo-store' && (
           <div className="flex flex-col items-center justify-center h-[60vh] text-center">
             <div className="w-20 h-20 bg-bg-sidebar rounded-full flex items-center justify-center mb-6 border border-border-main">
               <Settings className="text-text-muted" size={32} />

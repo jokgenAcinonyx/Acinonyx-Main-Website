@@ -46,7 +46,11 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
 
   // Scheduling
   const [availableSlots, setAvailableSlots] = useState<any>(null);
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const toLocalDateStr = (d = new Date()) => {
+    const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
+    return `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  };
+  const [selectedDate, setSelectedDate] = useState(toLocalDateStr());
   const [selectedTime, setSelectedTime] = useState('');
 
   // Booking form data
@@ -63,17 +67,36 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
     player_count: 1
   });
 
+  // Reviews
+  const [reviews, setReviews] = useState<any[]>([]);
+  const [showReviewsModal, setShowReviewsModal] = useState(false);
+
   // ── Fetch on mount ──────────────────────────────────────────────────────────
   useEffect(() => {
+    // Reset all booking state when kijoId changes
+    setSelectedDate(toLocalDateStr());
+    setSelectedTime('');
+    setBookingStep(1);
+    setSelectedPackage(null);
+    setAvailableSlots(null);
+    setSelectedBoostingAccountId(null);
+    setIsPaying(false);
+    setBookingData({
+      nickname: '', gameId: '', dynamic_data: {}, gameAccountId: null,
+      paymentMethod: 'Wallet', scheduledAt: '', gameTitle: '',
+      categoryId: null, quantity: 1, player_count: 1
+    });
+
     const load = async () => {
       setIsLoading(true);
       try {
-        const [detailRes, historyRes, gamesRes, feeRes, accountsRes] = await Promise.all([
+        const [detailRes, historyRes, gamesRes, feeRes, accountsRes, reviewsRes] = await Promise.all([
           fetchWithAuth(`/api/marketplace/kijo/${kijoId}`),
           fetchWithAuth(`/api/marketplace/kijo/${kijoId}/history`),
           fetchWithAuth('/api/kijo/available-games'),
           fetchWithAuth('/api/admin/settings'),
-          fetchWithAuth(`/api/kijo/game-accounts/${user.id}`)
+          fetchWithAuth(`/api/kijo/game-accounts/${user.id}`),
+          fetchWithAuth(`/api/marketplace/kijo/${kijoId}/reviews`)
         ]);
 
         if (detailRes.ok) {
@@ -90,6 +113,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
           setAdminFeePercent(d.admin_fee || 10);
         }
         if (accountsRes.ok) setUserGameAccounts(await accountsRes.json());
+        if (reviewsRes.ok) setReviews(await reviewsRes.json());
       } catch (e) {
         console.error('KijoStorePage load error:', e);
       } finally {
@@ -127,10 +151,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
     const qty = qtyOverride !== undefined ? qtyOverride : (bookingData.quantity || 1);
     const baseDuration = selectedPackage.duration || 0;
     if (selectedPackage.is_recurring === 1) {
-      const extraDuration = selectedPackage.recurring_extra_duration || 0;
-      const everyQuantity = selectedPackage.recurring_every_quantity || 1;
-      const extraCount = Math.floor((qty - 1) / everyQuantity);
-      return baseDuration + extraCount * extraDuration;
+      return baseDuration * qty;
     }
     return baseDuration;
   };
@@ -211,15 +232,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
     const allowedDays = availableSlots.weekly_days ? availableSlots.weekly_days.split(',') : [];
     if (allowedDays.length > 0 && !allowedDays.includes(dayName)) return [];
 
-    // Block time slots if the selected date falls within a holiday
     const kijoHolidays: Array<{ start_date: string; end_date: string | null }> = availableSlots.holidays || [];
-    const selectedDay = new Date(selectedDate + 'T00:00:00'); selectedDay.setHours(0, 0, 0, 0);
-    for (const h of kijoHolidays) {
-      const hStart = new Date(h.start_date); hStart.setHours(0, 0, 0, 0);
-      const hEnd = h.end_date ? new Date(h.end_date) : null;
-      if (hEnd) hEnd.setHours(23, 59, 59, 999);
-      if (selectedDay >= hStart && (!hEnd || selectedDay <= hEnd)) return [];
-    }
 
     const [startH, startM] = availableSlots.work_start.split(':').map(Number);
     const [endH, endM] = availableSlots.work_end.split(':').map(Number);
@@ -247,8 +260,18 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
         if (slotTime < new Date(availableSlots.break_until)) type = 'busy';
       }
 
-      let busySubType: 'none' | 'active' | 'break' | 'pre' = 'none';
+      let busySubType: 'none' | 'active' | 'break' | 'pre' | 'holiday' = 'none';
       let isFirstBreak = false;
+      // Holiday check — block individual slots that fall within a day-off window
+      if (type === 'available') {
+        for (const h of kijoHolidays) {
+          const hStart = new Date(h.start_date);
+          const hEnd = h.end_date ? new Date(h.end_date) : null;
+          if (slotTime >= hStart && (!hEnd || slotTime < hEnd)) {
+            type = 'busy'; busySubType = 'holiday'; break;
+          }
+        }
+      }
       if (type === 'available') {
         for (const s of availableSlots.busy_slots) {
           const sessionStart = new Date(s.start);
@@ -299,21 +322,35 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
       : [];
     const kijoHolidays: Array<{ start_date: string; end_date: string | null }> = availableSlots?.holidays || [];
 
+    const [wsh2, wsm2] = (availableSlots?.work_start || '08:00').split(':').map(Number);
+    const [weh2, wem2] = (availableSlots?.work_end || '22:00').split(':').map(Number);
     const isDisabled = (d: Date): boolean => {
       if (weeklyAllowed.length > 0 && !weeklyAllowed.includes(DAYS_ID_LOC[d.getDay()])) return true;
-      for (const h of kijoHolidays) {
-        const hStart = new Date(h.start_date); hStart.setHours(0, 0, 0, 0);
-        const hEnd = h.end_date ? new Date(h.end_date) : null;
-        if (hEnd) hEnd.setHours(23, 59, 59, 999);
-        if (d >= hStart && (!hEnd || d <= hEnd)) return true;
+      if (kijoHolidays.length === 0) return false;
+      // Disable only if the ENTIRE work window on this day is covered by holidays
+      const wStart = new Date(d); wStart.setHours(wsh2, wsm2, 0, 0);
+      const wEnd = new Date(d); wEnd.setHours(weh2, wem2, 0, 0);
+      if (wEnd <= wStart) wEnd.setDate(wEnd.getDate() + 1);
+      for (let t = new Date(wStart); t < wEnd; t.setMinutes(t.getMinutes() + 30)) {
+        const tSnap = new Date(t);
+        const covered = kijoHolidays.some(h => {
+          const hStart = new Date(h.start_date);
+          const hEnd = h.end_date ? new Date(h.end_date) : null;
+          return tSnap >= hStart && (!hEnd || tSnap < hEnd);
+        });
+        if (!covered) return false;
       }
-      return false;
+      return true;
     };
 
+    const localStr = (d: Date) => {
+      const y = d.getFullYear(), mo = d.getMonth() + 1, day = d.getDate();
+      return `${y}-${String(mo).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    };
     const days = [];
     for (let i = 0; i <= preOrderDays; i++) {
       const d = new Date(today); d.setDate(today.getDate() + i);
-      const dateStr = d.toISOString().split('T')[0];
+      const dateStr = localStr(d);
       days.push({
         dateStr,
         dayShort: DAYS_SHORT[d.getDay()],
@@ -333,7 +370,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
         pkg={selectedPackage}
         bookingData={{
           ...bookingData,
-          gameTitle: selectedCategoryName,
+          gameTitle: selectedGameName || selectedCategoryName,
           duration: calculateTotalDuration() / 60,
           scheduledAt: `${selectedDate}T${selectedTime}:00`,
           kijoGameAccountId: selectedBoostingAccountId || undefined
@@ -468,6 +505,37 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
               </div>
             </div>
           </div>
+
+          {/* Rating & Review Box */}
+          <button
+            onClick={() => setShowReviewsModal(true)}
+            className="w-full bg-bg-sidebar border border-border-main rounded-2xl p-4 shadow-sm hover:border-orange-primary/30 transition-all text-left"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Star size={14} className="text-orange-primary" fill="currentColor" />
+                <span className="text-xs font-bold text-text-muted uppercase tracking-wider">Rating & Ulasan</span>
+              </div>
+              <ChevronDown size={14} className="text-text-muted" />
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-2xl font-bold text-text-main">{(kijo.rating || 0).toFixed(1)}</span>
+              <div className="flex-1">
+                <div className="flex items-center gap-0.5 mb-1">
+                  {[1, 2, 3, 4, 5].map(s => (
+                    <Star key={s} size={12} className={s <= Math.round(kijo.rating || 0) ? 'text-orange-primary' : 'text-border-main'} fill="currentColor" />
+                  ))}
+                </div>
+                <p className="text-[11px] font-bold text-text-muted">{kijo.total_reviews || 0} ulasan</p>
+              </div>
+            </div>
+            {reviews.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-border-main">
+                <p className="text-xs text-text-muted italic line-clamp-2">"{reviews[0].comment || 'Tidak ada komentar'}"</p>
+                <p className="text-[11px] font-bold text-text-muted mt-1">— {reviews[0].jokies_name}</p>
+              </div>
+            )}
+          </button>
 
           {/* Order History */}
           {kijoHistory.length > 0 && (
@@ -709,6 +777,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                       const isBookedActive = slot.type === 'busy' && slot.busySubType === 'active';
                       const isBookedBreak = slot.type === 'busy' && slot.busySubType === 'break';
                       const isBookedPre = slot.type === 'busy' && slot.busySubType === 'pre';
+                      const isHoliday = slot.type === 'busy' && slot.busySubType === 'holiday';
 
                       return (
                         <button
@@ -734,7 +803,9 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                                     : 'bg-blue-500/30 border-blue-500/50 text-blue-100'
                                   : isBookedPre
                                     ? 'bg-gray-800/80 border-gray-700 text-gray-400'
-                                    : slot.available
+                                    : isHoliday
+                                      ? 'bg-indigo-500/20 border-indigo-500/40 text-indigo-300'
+                                      : slot.available
                                       ? 'bg-bg-sidebar border-border-main text-text-main hover:border-orange-primary/50'
                                       : slot.type === 'busy'
                                         ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-500'
@@ -743,6 +814,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                         >
                           {slot.time}
                           {isBookedActive && <span className="block text-xs font-bold uppercase">Booked</span>}
+                          {isHoliday && <span className="block text-xs font-bold uppercase">Libur</span>}
                           {slot.type === 'busy' && status === 'none' && !slot.busySubType && <span className="block text-xs font-bold uppercase">Penuh</span>}
                           {slot.type === 'past' && status === 'none' && <span className="block text-xs opacity-70 uppercase">Lewat</span>}
                           {slot.isNextDay && <span className="block text-xs opacity-50 uppercase">Besok</span>}
@@ -768,8 +840,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                         onClick={() => setBookingData(prev => {
                           const current = prev.player_count || selectedPackage.min_players || 2;
                           const pkgMax = selectedPackage.max_players || selectedPackage.min_players || 2;
-                          const kijoMax = kijo?.max_slots || 4;
-                          return { ...prev, player_count: Math.min(Math.min(pkgMax, kijoMax), current + 1) };
+                          return { ...prev, player_count: Math.min(pkgMax, current + 1) };
                         })}
                         disabled={bookingData.player_count >= (selectedPackage.max_players || selectedPackage.min_players || 2)}
                         className={`w-10 h-10 rounded-lg bg-bg-main border border-border-main flex items-center justify-center text-text-main hover:border-orange-primary transition-all font-bold text-xl ${bookingData.player_count >= (selectedPackage.max_players || selectedPackage.min_players || 2) ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -777,7 +848,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                     </div>
                     <p className="text-xs font-bold text-text-muted ml-1 uppercase tracking-wider">
                       Paket ini mendukung {selectedPackage.min_players}–{selectedPackage.max_players} pemain.
-                      {kijo?.max_slots ? ` (Limit Partner: ${kijo.max_slots} Pemain)` : ''}
                     </p>
                   </div>
                 )}
@@ -989,6 +1059,93 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
           )}
         </div>
       </div>
+
+      {/* Reviews Modal */}
+      {showReviewsModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowReviewsModal(false)}>
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-bg-sidebar border border-border-main rounded-2xl w-full max-w-lg max-h-[80vh] overflow-hidden shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-5 border-b border-border-main flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Star size={16} className="text-orange-primary" fill="currentColor" />
+                <div>
+                  <h3 className="text-sm font-bold text-text-main uppercase tracking-wider">Ulasan</h3>
+                  <p className="text-[11px] text-text-muted font-bold">{kijo.total_reviews || 0} ulasan · {(kijo.rating || 0).toFixed(1)} rata-rata</p>
+                </div>
+              </div>
+              <button onClick={() => setShowReviewsModal(false)} className="p-2 hover:bg-bg-main rounded-xl transition-all">
+                <XCircle size={18} className="text-text-muted" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto max-h-[calc(80vh-80px)] space-y-4">
+              {/* Star Distribution */}
+              <div className="space-y-1.5 pb-4 border-b border-border-main">
+                {[5, 4, 3, 2, 1].map(star => {
+                  const count = reviews.filter(r => Math.round(r.stars) === star).length;
+                  const pct = reviews.length > 0 ? (count / reviews.length) * 100 : 0;
+                  return (
+                    <div key={star} className="flex items-center gap-2">
+                      <span className="text-[11px] font-bold text-text-muted w-3">{star}</span>
+                      <Star size={10} className="text-orange-primary" fill="currentColor" />
+                      <div className="flex-1 h-2 bg-bg-main rounded-full overflow-hidden">
+                        <div className="h-full bg-orange-primary rounded-full transition-all" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-[11px] font-bold text-text-muted w-6 text-right">{count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Review List */}
+              {reviews.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-xs text-text-muted italic">Belum ada ulasan.</p>
+                </div>
+              ) : reviews.map((r: any, i: number) => (
+                <div key={i} className="bg-bg-main border border-border-main rounded-xl p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={r.jokies_avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${r.jokies_name}`}
+                        className="w-7 h-7 rounded-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                      <div>
+                        <p className="text-xs font-bold text-text-main">{r.jokies_name}</p>
+                        <p className="text-[11px] text-text-muted font-bold">{new Date(r.created_at).toLocaleDateString('id-ID', { dateStyle: 'medium' })}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-0.5">
+                      {[1, 2, 3, 4, 5].map(s => (
+                        <Star key={s} size={10} className={s <= Math.round(r.stars) ? 'text-orange-primary' : 'text-border-main'} fill="currentColor" />
+                      ))}
+                    </div>
+                  </div>
+                  {r.comment && <p className="text-xs text-text-muted leading-relaxed">{r.comment}</p>}
+                  {r.tags && (
+                    <div className="flex flex-wrap gap-1">
+                      {(() => { try { return (typeof r.tags === 'string' ? JSON.parse(r.tags) : r.tags); } catch { return []; } })().map((tag: string, ti: number) => (
+                        <span key={ti} className="text-[10px] font-bold text-orange-primary bg-orange-primary/10 px-1.5 py-0.5 rounded border border-orange-primary/20 uppercase">{tag.trim()}</span>
+                      ))}
+                    </div>
+                  )}
+                  {r.reply && (
+                    <div className="mt-2 pl-3 border-l-2 border-orange-primary/30">
+                      <p className="text-[11px] font-bold text-orange-primary uppercase tracking-widest mb-0.5">Balasan Partner</p>
+                      <p className="text-xs text-text-muted leading-relaxed">{r.reply}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

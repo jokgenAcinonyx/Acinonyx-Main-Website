@@ -2090,7 +2090,7 @@ export default function AccountPage({ user, onLogout, onStartVerification, setVi
                       }}
                     >
                       {gameFormData.account_type === 'boosting' ? (
-                        <option value={data?.user?.verified_game || 'Mobile Legends'}>{data?.user?.verified_game || 'Mobile Legends'}</option>
+                        <option value={gameFormData.game_name}>{gameFormData.game_name || 'Belum ada game terverifikasi'}</option>
                       ) : (
                         availableGames.map(game => (
                           <option key={game.name} value={game.name}>{game.name}</option>
@@ -2101,7 +2101,7 @@ export default function AccountPage({ user, onLogout, onStartVerification, setVi
 
                   {/* Dynamic Fields */}
                   {(() => {
-                    const selectedGame = availableGames.find(g => g.name === (gameFormData.account_type === 'boosting' ? (data?.user?.verified_game || 'Mobile Legends') : gameFormData.game_name));
+                    const selectedGame = availableGames.find(g => g.name === gameFormData.game_name);
                     const schema = selectedGame?.schema || [];
                     const gameRanks = selectedGame?.ranks || [];
                     
@@ -2169,7 +2169,7 @@ export default function AccountPage({ user, onLogout, onStartVerification, setVi
                   })()}
 
                   {/* Fallback for legacy data or if no schema exists */}
-                  {(!availableGames.find(g => g.name === (gameFormData.account_type === 'boosting' ? (data?.user?.verified_game || 'Mobile Legends') : gameFormData.game_name))?.schema?.length) && (
+                  {(!availableGames.find(g => g.name === gameFormData.game_name)?.schema?.length) && (
                     <>
                       <div className="space-y-2">
                         <label className="text-xs font-bold text-text-muted uppercase tracking-widest ml-1">Nickname</label>

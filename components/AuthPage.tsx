@@ -162,6 +162,21 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
         } else {
           setError(data.message);
         }
+      } else if (forgotStep === 2) {
+        // Resend forgot password OTP
+        const res = await fetch('/api/auth/forgot-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: formData.email })
+        });
+        const data = await res.json();
+        if (data.success) {
+          setOtpTimer(120);
+          setOtpValues(['', '', '', '', '', '']);
+          setFormData(prev => ({ ...prev, otp: '' }));
+        } else {
+          setError(data.message);
+        }
       } else if (forgotStep === 3) {
         if (!validatePassword(formData.password)) {
           setError('Password minimal 8 karakter dengan huruf besar, kecil, angka, dan simbol (tanpa emoji)');
@@ -310,6 +325,8 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
       
       // Send OTP for Signup
       const identifier = formData.otp_method === 'email' ? formData.email : formData.phone;
+      setTargetIdentifier(identifier);
+      setOtpMethod(formData.otp_method);
       await handleSendOTP(identifier, formData.otp_method);
     }
   };

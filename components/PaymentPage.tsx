@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Shield, CreditCard, Wallet, Zap, CheckCircle2, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Shield, CreditCard, Wallet, Zap, CheckCircle2, AlertCircle, FlaskConical } from 'lucide-react';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
 import { useAlert } from './AlertContext';
 
@@ -78,7 +78,9 @@ export default function PaymentPage({ user, kijo, pkg, bookingData, onBack, onSu
       if (res.ok) {
         setPaymentStep(4);
       } else {
-        showAlert('Gagal memproses pembayaran.', 'error');
+        let msg = 'Gagal memproses pembayaran.';
+        try { const err = await res.json(); msg = err.message || msg; } catch {}
+        showAlert(msg, 'error');
         setPaymentStep(1);
       }
     } catch (error) {
@@ -194,7 +196,9 @@ export default function PaymentPage({ user, kijo, pkg, bookingData, onBack, onSu
               onClick={handlePayment}
               className="w-full bg-orange-primary hover:bg-orange-primary/90 text-black font-bold py-6 rounded-2xl shadow-xl shadow-orange-primary/20 transition-all flex items-center justify-center gap-3 text-lg mt-8"
             >
-              KONFIRMASI & BAYAR SEKARANG
+              {selectedMethod === 'Simulasi' ? (
+                <><FlaskConical size={18} /> KONFIRMASI & BUAT PESANAN (SIMULASI)</>
+              ) : 'KONFIRMASI & BAYAR SEKARANG'}
             </button>
             
             <p className="text-xs text-text-muted text-center font-bold uppercase tracking-widest flex items-center justify-center gap-1">
@@ -233,16 +237,26 @@ export default function PaymentPage({ user, kijo, pkg, bookingData, onBack, onSu
                 onClick={() => setSelectedMethod('Wallet')}
               />
               <PaymentMethod 
-                id="QRIS"
-                name="QRIS / E-Wallet"
-                balance="OVO, Dana, GoPay"
-                icon={<Zap size={24} />}
-                selected={selectedMethod === 'QRIS'}
-                onClick={() => setSelectedMethod('QRIS')}
+                id="Simulasi"
+                name="Simulasi Pembayaran"
+                balance="Demo · Tanpa pembayaran nyata"
+                icon={<FlaskConical size={24} />}
+                selected={selectedMethod === 'Simulasi'}
+                onClick={() => setSelectedMethod('Simulasi')}
               />
             </div>
 
-            <div className="mt-8 p-6 bg-bg-main rounded-2xl border border-border-main flex items-start gap-4">
+            {selectedMethod === 'Simulasi' && (
+              <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-2xl flex items-start gap-3">
+                <FlaskConical size={16} className="text-yellow-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-xs font-bold text-yellow-400 uppercase tracking-widest mb-0.5">Mode Simulasi Aktif</p>
+                  <p className="text-[11px] text-yellow-400/80 leading-relaxed">Pesanan akan dibuat tanpa pemotongan saldo. Gunakan untuk demo & testing alur pemesanan.</p>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 p-6 bg-bg-main rounded-2xl border border-border-main flex items-start gap-4">
               <div className="w-10 h-10 bg-orange-primary/10 rounded-xl flex items-center justify-center text-orange-primary shrink-0">
                 <Shield size={20} />
               </div>
@@ -291,7 +305,9 @@ export default function PaymentPage({ user, kijo, pkg, bookingData, onBack, onSu
               onClick={() => setPaymentStep(2)}
               className="w-full bg-orange-primary hover:bg-orange-primary/90 text-black font-bold py-5 rounded-2xl shadow-xl shadow-orange-primary/20 transition-all flex items-center justify-center gap-2"
             >
-              BAYAR SEKARANG
+              {selectedMethod === 'Simulasi' ? (
+                <><FlaskConical size={18} /> LIHAT RINGKASAN (SIMULASI)</>
+              ) : 'LANJUT KE RINGKASAN'}
             </button>
             
             <p className="text-xs text-text-muted text-center mt-4 font-bold uppercase tracking-widest flex items-center justify-center gap-1">

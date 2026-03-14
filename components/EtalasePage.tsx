@@ -382,8 +382,8 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
           ...newPackage,
           price: priceNum,
           duration: durationMins,
-          recurring_extra_duration: extraDurationMins,
-          recurring_every_quantity: parseInt(newPackage.recurring_every_quantity.toString()) || 1,
+          recurring_extra_duration: 0,
+          recurring_every_quantity: 1,
           player_count: parseInt(newPackage.player_count) || 2,
           min_players: parseInt(newPackage.min_players) || 2,
           max_players: parseInt(newPackage.max_players) || 4,
@@ -1686,7 +1686,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                         type="number" 
                         required
                         min="2"
-                        max="4"
                         placeholder="4"
                         className="w-full bg-bg-main border border-border-main rounded-xl py-3 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm font-bold"
                         value={newPackage.max_players}
@@ -1820,55 +1819,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                   </div>
                 </div>
 
-                {newPackage.is_recurring === 1 && newPackage.is_bundle === 0 && (
-                  <div className="space-y-4 p-4 bg-bg-main border border-border-main rounded-xl animate-in slide-in-from-top-2 duration-300">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-bold text-text-muted uppercase tracking-widest ml-1">Tambahan Durasi</label>
-                        <div className="flex gap-2">
-                          <div className="relative flex-1">
-                            <select
-                              className="w-full bg-bg-sidebar border border-border-main rounded-lg py-2 px-2 text-text-main focus:outline-none focus:border-orange-primary transition-all appearance-none font-bold text-xs"
-                              value={newPackage.extra_duration_hours}
-                              onChange={(e) => setNewPackage({...newPackage, extra_duration_hours: e.target.value})}
-                            >
-                              {Array.from({ length: 12 }, (_, i) => (
-                                <option key={i} value={i}>{i} Jam</option>
-                              ))}
-                            </select>
-                            <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" size={10} />
-                          </div>
-                          <div className="relative flex-1">
-                            <select
-                              className="w-full bg-bg-sidebar border border-border-main rounded-lg py-2 px-2 text-text-main focus:outline-none focus:border-orange-primary transition-all appearance-none font-bold text-xs"
-                              value={newPackage.extra_duration_minutes}
-                              onChange={(e) => setNewPackage({...newPackage, extra_duration_minutes: e.target.value})}
-                            >
-                              <option value="0">0 Menit</option>
-                              <option value="30">30 Menit</option>
-                            </select>
-                            <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" size={10} />
-                          </div>
-                        </div>
-                      </div>
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-bold text-text-muted uppercase tracking-widest ml-1">Untuk Setiap</label>
-                        <div className="relative">
-                          <input 
-                            type="number" 
-                            min="1"
-                            placeholder="1"
-                            className="w-full bg-bg-sidebar border border-border-main rounded-lg py-2 px-3 text-text-main focus:outline-none focus:border-orange-primary transition-all text-xs font-bold pr-12"
-                            value={newPackage.recurring_every_quantity}
-                            onChange={(e) => setNewPackage({...newPackage, recurring_every_quantity: parseInt(e.target.value) || 1})}
-                          />
-                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-text-muted">QTY</span>
-                        </div>
-                      </div>
-                    </div>
-                    <p className="text-xs text-text-muted italic">Setiap penambahan {newPackage.recurring_every_quantity} produk, durasi akan bertambah {(parseInt(newPackage.extra_duration_hours) || 0)} Jam {(parseInt(newPackage.extra_duration_minutes) || 0)} Menit.</p>
-                  </div>
-                )}
                 <div className="flex gap-3 mt-6">
                   <button 
                     type="button"

@@ -25,6 +25,18 @@ if (GCS_PROJECT_ID && GCS_KEY_FILE_PATH) {
       keyFilename: path.resolve(process.cwd(), GCS_KEY_FILE_PATH),
     });
     console.log('[GCS] Storage client initialized.');
+    // Ensure both buckets allow public reads once at startup.
+    // bucket.makePublic() sets allUsers:objectViewer in IAM (works with uniform bucket-level access).
+    (async () => {
+      for (const bkt of [GCS_BUCKET_PROFIL, GCS_BUCKET_BUKTI]) {
+        try {
+          await gcsStorage!.bucket(bkt).makePublic();
+          console.log(`[GCS] Bucket ${bkt} is publicly readable.`);
+        } catch (e: any) {
+          console.warn(`[GCS] Could not set public IAM on ${bkt} (may already be public):`, e?.message || e);
+        }
+      }
+    })();
   } catch (e) {
     console.warn('[GCS] Failed to initialize Storage client:', e);
   }
@@ -51,7 +63,8 @@ async function uploadBase64ToGCS(bucketName: string, dataUri: string, folder: st
   const file = bucket.file(filename);
 
   await file.save(buffer, { contentType: mimeType, resumable: false });
-  await file.makePublic();
+  // Note: with uniform bucket-level access, file-level ACLs are disabled.
+  // Public access is controlled by the bucket IAM policy set at startup.
 
   return `https://storage.googleapis.com/${bucketName}/${filename}`;
 }
@@ -1208,6 +1221,25 @@ async function startServer() {
     }
   });
 
+  // API: Get public reviews for a Kijo
+  app.get('/api/marketplace/kijo/:id/reviews', async (req, res) => {
+    const { id } = req.params;
+    try {
+      const reviews = await db.prepare(`
+        SELECT r.stars, r.skill_rating, r.attitude_rating, r.comment, r.tags, r.reply, r.reply_at, r.created_at,
+               u.full_name as jokies_name, u.avatar_url as jokies_avatar
+        FROM ratings r
+        JOIN users u ON r.jokies_id = u.id
+        WHERE r.user_id = ?
+        ORDER BY r.created_at DESC
+      `).all(id);
+      res.json(reviews);
+    } catch (error: any) {
+      console.error('[API] Kijo Reviews Error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
   // API: Get Orders for Buyer (Jokies)
   app.get('/api/jokies/orders/:userId', async (req, res) => {
     const { userId } = req.params;
@@ -1279,27 +1311,29 @@ async function startServer() {
   app.post('/api/jokies/place-order', async (req, res) => {
     const { jokiesId, kijoId, title, price, quantity, player_count, duration, scheduledAt, gameTitle, rankStart, rankEnd, paymentMethod, jokiesNickname, jokiesGameId, jokiesGameAccountId, categoryId, kijoGameAccountId: requestedKijoGameAccountId } = req.body;
     try {
-      // 1. Check if user has personal game account for this game
-      const personalAccount = db.prepare(`
-        SELECT id FROM game_accounts 
-        WHERE user_id = ? 
-        AND (game_name LIKE ? OR ? LIKE '%' || game_name || '%')
-        AND account_type = 'personal' 
-        AND deleted = 0
-      `).get(jokiesId, `%${gameTitle}%`, gameTitle);
+      // 1. Check if user has personal game account for this game (skip for Simulasi)
+      if (paymentMethod !== 'Simulasi') {
+        const personalAccount = await db.prepare(`
+          SELECT id FROM game_accounts 
+          WHERE user_id = ? 
+          AND game_name LIKE ?
+          AND account_type = 'personal' 
+          AND deleted = 0
+        `).get(jokiesId, `%${gameTitle}%`);
 
-      if (!personalAccount) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Anda harus menambahkan detail akun game personal untuk game ini di halaman Akun sebelum melakukan pemesanan.' 
-        });
+        if (!personalAccount) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'Anda harus menambahkan detail akun game personal untuk game ini di halaman Akun sebelum melakukan pemesanan.' 
+          });
+        }
       }
 
-      // Check if Jokies is locked and fetch data
-      const jokies = db.prepare('SELECT full_name, wallet_jokies, jokies_lock_until FROM users WHERE id = ?').get(jokiesId) as any;
+      // Fetch jokies user data
+      const jokies = await db.prepare('SELECT full_name, wallet_jokies, jokies_lock_until FROM users WHERE id = ?').get(jokiesId) as any;
       if (!jokies) return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
 
-      if (jokies.jokies_lock_until && new Date(jokies.jokies_lock_until) > new Date()) {
+      if (paymentMethod !== 'Simulasi' && jokies.jokies_lock_until && new Date(jokies.jokies_lock_until) > new Date()) {
         const lockTime = new Date(jokies.jokies_lock_until).toLocaleTimeString('id-ID');
         return res.status(403).json({ success: false, message: `Tidak dapat melakukan pemesanan selama 60 menit setelah pembatalan (Hingga ${lockTime}).` });
       }
@@ -1311,92 +1345,78 @@ async function startServer() {
       let finalJokiesDynamicData = req.body.dynamic_data ? JSON.stringify(req.body.dynamic_data) : null;
 
       if (jokiesGameAccountId) {
-        const acc = db.prepare('SELECT nickname, game_id, dynamic_data FROM game_accounts WHERE id = ? AND user_id = ? AND account_type = \'personal\' AND deleted = 0').get(jokiesGameAccountId, jokiesId) as any;
+        const acc = await db.prepare('SELECT nickname, game_id, dynamic_data FROM game_accounts WHERE id = ? AND user_id = ? AND account_type = \'personal\' AND deleted = 0').get(jokiesGameAccountId, jokiesId) as any;
         if (acc) {
           finalJokiesNickname = acc.nickname;
           finalJokiesGameId = acc.game_id;
           if (!finalJokiesDynamicData) finalJokiesDynamicData = acc.dynamic_data;
         }
       } else if (jokiesNickname && jokiesGameId) {
-        // Fallback for older clients or manual entry if allowed
-        const acc = db.prepare('SELECT id FROM game_accounts WHERE user_id = ? AND game_name = ? AND nickname = ? AND game_id = ? AND deleted = 0').get(jokiesId, gameTitle, jokiesNickname, jokiesGameId) as any;
+        const acc = await db.prepare('SELECT id FROM game_accounts WHERE user_id = ? AND game_name = ? AND nickname = ? AND game_id = ? AND deleted = 0').get(jokiesId, gameTitle, jokiesNickname, jokiesGameId) as any;
         if (acc) finalJokiesGameAccountId = acc.id;
       }
 
-      // Get Kijo availability settings
-      const kijo = db.prepare('SELECT full_name, work_start, work_end, break_start, break_end, break_time, pre_order_days, max_slots FROM users WHERE id = ?').get(kijoId) as any;
-      
-      // Basic validation of scheduledAt (Date & Time)
+      // Get Kijo data
+      const kijo = await db.prepare('SELECT full_name, work_start, work_end, break_time, pre_order_days, max_slots FROM users WHERE id = ?').get(kijoId) as any;
+      if (!kijo) return res.status(404).json({ success: false, message: 'Kijo tidak ditemukan' });
+
+      // Pre-order days check
       const scheduledDate = new Date(scheduledAt);
       const now = new Date();
-      
-      // Pre-order days check (Booking Window)
       const maxDate = new Date();
-      maxDate.setDate(now.getDate() + (kijo.pre_order_days ?? 7)); // Use ?? to allow 0
+      maxDate.setDate(now.getDate() + (kijo.pre_order_days ?? 7));
       maxDate.setHours(23, 59, 59, 999);
-      
-      const checkDate = new Date(scheduledDate);
-
-      if (checkDate > maxDate) {
+      if (scheduledDate > maxDate) {
         return res.status(400).json({ success: false, message: `Kijo ini hanya menerima pesanan maksimal ${kijo.pre_order_days ?? 7} hari ke depan.` });
       }
 
-      // Max slots check (0 = unlimited, default 3 if null)
-      const effectiveMaxSlots = kijo.max_slots === null ? 3 : kijo.max_slots;
+      // Max slots check (0 = unlimited)
+      const effectiveMaxSlots = kijo.max_slots === null ? 3 : (kijo.max_slots || 0);
       if (effectiveMaxSlots > 0) {
-        const activeOrders = db.prepare("SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing')").get(kijoId) as any;
-        if (activeOrders.count >= effectiveMaxSlots) {
+        const activeOrders = await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing')").get(kijoId) as any;
+        if ((activeOrders?.count ?? 0) >= effectiveMaxSlots) {
           return res.status(400).json({ success: false, message: 'Slot pesanan Kijo sudah penuh.' });
         }
       }
 
-      // Get current admin fee from settings (now as percentage)
-      const adminFeeSetting = db.prepare('SELECT value FROM settings WHERE `key` = ?').get('admin_fee') as any;
-      const adminFeePercent = adminFeeSetting ? parseInt(adminFeeSetting.value) : 10;
-      const basePrice = price * (quantity || 1);
+      // Admin fee
+      const adminFeeSetting = await db.prepare('SELECT value FROM settings WHERE `key` = ?').get('admin_fee') as any;
+      const adminFeePercent = adminFeeSetting ? (parseInt(adminFeeSetting.value) || 10) : 10;
+      const basePrice = (price || 0) * (quantity || 1);
       const adminFee = Math.round((basePrice * adminFeePercent) / 100);
       const totalPrice = basePrice + adminFee;
 
-      // If using Wallet, check balance and deduct
+      // Wallet balance check
       if (paymentMethod === 'Wallet') {
-        if (jokies.wallet_jokies < totalPrice) {
+        if ((jokies.wallet_jokies ?? 0) < totalPrice) {
           return res.status(400).json({ success: false, message: 'Saldo Wallet tidak mencukupi' });
         }
       }
 
-      // Fetch Kijo's game account for the relevant game
-      let kijoGameAccount;
+      // Fetch Kijo's boosting game account
+      let kijoGameAccount: any = null;
       
       if (requestedKijoGameAccountId) {
-        kijoGameAccount = db.prepare('SELECT id, nickname, game_id, dynamic_data FROM game_accounts WHERE id = ? AND user_id = ? AND account_type = \'boosting\' AND deleted = 0').get(requestedKijoGameAccountId, kijoId) as any;
+        kijoGameAccount = await db.prepare('SELECT id, nickname, game_id, dynamic_data FROM game_accounts WHERE id = ? AND user_id = ? AND account_type = \'boosting\' AND deleted = 0').get(requestedKijoGameAccountId, kijoId) as any;
       }
       
       if (!kijoGameAccount && categoryId) {
-        const category = db.prepare('SELECT rank FROM categories WHERE id = ?').get(categoryId) as any;
-        if (category && category.rank) {
-          // Try to find account with matching rank
-          kijoGameAccount = db.prepare(`
+        const category = await db.prepare('SELECT rank FROM categories WHERE id = ?').get(categoryId) as any;
+        if (category?.rank) {
+          kijoGameAccount = await db.prepare(`
             SELECT id, nickname, game_id, dynamic_data 
             FROM game_accounts 
-            WHERE user_id = ? 
-            AND (game_name LIKE ? OR ? LIKE '%' || game_name || '%')
-            AND account_type = 'boosting' 
-            AND rank = ? 
-            AND deleted = 0
-          `).get(kijoId, `%${gameTitle}%`, gameTitle, category.rank) as any;
+            WHERE user_id = ? AND game_name LIKE ? AND account_type = 'boosting' AND rank = ? AND deleted = 0
+          `).get(kijoId, `%${gameTitle}%`, category.rank) as any;
         }
       }
       
-      // Fallback to any boosting account for this game if no specific rank match found
       if (!kijoGameAccount) {
-        kijoGameAccount = db.prepare(`
+        kijoGameAccount = await db.prepare(`
           SELECT id, nickname, game_id, dynamic_data 
           FROM game_accounts 
-          WHERE user_id = ? 
-          AND (game_name LIKE ? OR ? LIKE '%' || game_name || '%')
-          AND account_type = 'boosting' 
-          AND deleted = 0
-        `).get(kijoId, `%${gameTitle}%`, gameTitle) as any;
+          WHERE user_id = ? AND game_name LIKE ? AND account_type = 'boosting' AND deleted = 0
+        `).get(kijoId, `%${gameTitle}%`) as any;
       }
 
       const kijoNickname = kijoGameAccount?.nickname || '-';
@@ -1412,23 +1432,17 @@ async function startServer() {
         const insert = await db.prepare(`
           INSERT INTO sessions (user_id, jokies_id, title, customer_name, price, admin_fee, total_price, quantity, player_count, scheduled_at, duration, status, game_title, rank_start, rank_end, payment_method, jokies_nickname, jokies_game_id, jokies_game_account_id, jokies_dynamic_data, kijo_nickname, kijo_game_id, kijo_game_account_id, kijo_dynamic_data, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(kijoId, jokiesId, title, jokies.full_name, price, adminFee, totalPrice, quantity || 1, player_count || 1, scheduledAt, duration || 1, 'upcoming', gameTitle, rankStart, rankEnd, paymentMethod, finalJokiesNickname, finalJokiesGameId, finalJokiesGameAccountId, finalJokiesDynamicData, kijoNickname, kijoGameId, kijoGameAccountId, kijoDynamicData, new Date().toISOString());
+        `).run(kijoId, jokiesId, title, jokies.full_name, price, adminFee, totalPrice, quantity || 1, player_count || 1, scheduledAt, duration || 1, 'upcoming', gameTitle, rankStart || '', rankEnd || '', paymentMethod, finalJokiesNickname, finalJokiesGameId, finalJokiesGameAccountId, finalJokiesDynamicData, kijoNickname, kijoGameId, kijoGameAccountId, kijoDynamicData, new Date().toISOString());
 
-        // Add notification for Kijo
         await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-          kijoId,
-          'order_new',
-          'Pesanan Baru!',
+          kijoId, 'order_new', 'Pesanan Baru!',
           `Anda menerima pesanan baru: ${title}. ID Pesanan: #${insert.insertId}`
         );
 
-        // Add notification for Admins
         const admins = await db.prepare("SELECT id FROM users WHERE role = 'admin'").all() as any[];
         for (const admin of admins) {
           await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-            admin.id,
-            'system',
-            'Pesanan Baru Masuk',
+            admin.id, 'system', 'Pesanan Baru Masuk',
             `Pesanan baru #${insert.insertId} telah dibuat oleh ${jokies.full_name} untuk ${kijo.full_name}.`
           );
         }
@@ -1439,7 +1453,7 @@ async function startServer() {
       res.json({ success: true, orderId: result.insertId });
     } catch (error) {
       console.error('Error placing order:', error);
-      res.status(500).json({ success: false, message: 'Gagal membuat pesanan' });
+      res.status(500).json({ success: false, message: 'Gagal membuat pesanan: ' + (error as any)?.message });
     }
   });
 
@@ -2059,10 +2073,10 @@ async function startServer() {
           SELECT nickname, game_id, id 
           FROM game_accounts 
           WHERE user_id = ? 
-          AND (game_name LIKE ? OR ? LIKE '%' || game_name || '%')
+          AND game_name LIKE ?
           AND account_type = 'boosting' 
           AND deleted = 0
-        `).get(session.user_id, `%${session.game_title}%`, session.game_title) as any;
+        `).get(session.user_id, `%${session.game_title}%`) as any;
         if (boostingAcc) {
           await db.prepare("UPDATE sessions SET kijo_nickname = ?, kijo_game_id = ?, kijo_game_account_id = ? WHERE id = ?").run(boostingAcc.nickname, boostingAcc.game_id, boostingAcc.id, orderId);
         }
@@ -2800,10 +2814,10 @@ async function startServer() {
               kijo_game_id = ?, 
               kijo_game_account_id = ?
             WHERE user_id = ? 
-            AND (game_title LIKE ? OR ? LIKE '%' || game_title || '%')
+            AND game_title LIKE ?
             AND (kijo_nickname = '-' OR kijo_nickname IS NULL OR kijo_nickname = '') 
             AND status IN ('upcoming', 'ongoing')
-          `).run(nickname, game_id, id, userId, `%${game_name}%`, game_name);
+          `).run(nickname, game_id, id, userId, `%${game_name}%`);
         }
       } else {
         // Check for a soft-deleted duplicate before inserting
@@ -2829,10 +2843,10 @@ async function startServer() {
                 kijo_game_id = ?,
                 kijo_game_account_id = ?
               WHERE user_id = ?
-              AND (game_title LIKE ? OR ? LIKE '%' || game_title || '%')
+              AND game_title LIKE ?
               AND (kijo_nickname = '-' OR kijo_nickname IS NULL OR kijo_nickname = '')
               AND status IN ('upcoming', 'ongoing')
-            `).run(nickname, game_id, existingDeleted.id, userId, `%${game_name}%`, game_name);
+            `).run(nickname, game_id, existingDeleted.id, userId, `%${game_name}%`);
           }
 
           return res.json({ success: true, restored: true });
@@ -2852,10 +2866,10 @@ async function startServer() {
               kijo_game_id = ?, 
               kijo_game_account_id = ?
             WHERE user_id = ? 
-            AND (game_title LIKE ? OR ? LIKE '%' || game_title || '%')
+            AND game_title LIKE ?
             AND (kijo_nickname = '-' OR kijo_nickname IS NULL OR kijo_nickname = '') 
             AND status IN ('upcoming', 'ongoing')
-          `).run(nickname, game_id, accountId, userId, `%${game_name}%`, game_name);
+          `).run(nickname, game_id, accountId, userId, `%${game_name}%`);
         }
       }
       res.json({ success: true });
@@ -3259,9 +3273,9 @@ async function startServer() {
       if (!session.kijo_nickname || session.kijo_nickname === '-') {
         const boostingAcc = await db.prepare(`
           SELECT nickname, game_id, id FROM game_accounts
-          WHERE user_id = ? AND (game_name LIKE ? OR ? LIKE '%' || game_name || '%')
+          WHERE user_id = ? AND game_name LIKE ?
           AND account_type = 'boosting' AND deleted = 0
-        `).get(session.user_id, `%${session.game_title}%`, session.game_title) as any;
+        `).get(session.user_id, `%${session.game_title}%`) as any;
         if (boostingAcc) {
           await db.prepare('UPDATE sessions SET kijo_nickname = ?, kijo_game_id = ?, kijo_game_account_id = ? WHERE id = ?').run(boostingAcc.nickname, boostingAcc.game_id, boostingAcc.id, id);
         }

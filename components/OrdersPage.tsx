@@ -14,9 +14,10 @@ import OrderChat from './OrderChat';
 interface OrdersPageProps {
   user: any;
   globalGames: any[];
+  onGoToMarketplace?: () => void;
 }
 
-export default function OrdersPage({ user, globalGames }: OrdersPageProps) {
+export default function OrdersPage({ user, globalGames, onGoToMarketplace }: OrdersPageProps) {
   const { showAlert } = useAlert();
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -606,7 +607,7 @@ export default function OrdersPage({ user, globalGames }: OrdersPageProps) {
             <h3 className="text-text-main font-bold text-xl mb-2">Belum Ada Pesanan</h3>
             <p className="text-text-muted text-sm leading-relaxed">Sepertinya Anda belum memesan jasa KIJO. Cari partner terbaikmu sekarang!</p>
           </div>
-          <button className="bg-orange-primary text-black font-bold px-10 py-4 rounded-2xl text-xs uppercase tracking-widest hover:scale-105 transition-all shadow-xl shadow-orange-primary/10">
+          <button onClick={onGoToMarketplace} className="bg-orange-primary text-black font-bold px-10 py-4 rounded-2xl text-xs uppercase tracking-widest hover:scale-105 transition-all shadow-xl shadow-orange-primary/10">
             LIHAT MARKETPLACE
           </button>
         </div>
