@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Package, Clock, ChevronRight, Gamepad2, Zap, XCircle, CheckCircle2, MessageSquare, Calendar,
+import { Package, Clock, ChevronRight, Gamepad2, Zap, MessageSquare, Calendar,
   CreditCard,
   User,
   Image as ImageIcon,
@@ -8,6 +8,7 @@ import { Package, Clock, ChevronRight, Gamepad2, Zap, XCircle, CheckCircle2, Mes
   ArrowLeft
 } from 'lucide-react';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
+import { formatDuration, statusColor, statusLabel, toJakartaDT as toJakartaDateTime, toJakartaDate, toJakartaTime } from '@/utils/formatters';
 import { useAlert } from './AlertContext';
 import OrderChat from './OrderChat';
 
@@ -25,7 +26,10 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
   const [cancelReason, setCancelReason] = useState('');
   const [isCancelling, setIsCancelling] = useState(false);
   const [isCompleting, setIsCompleting] = useState(false);
+  const [isAgreeingCancel, setIsAgreeingCancel] = useState(false);
+  const [isRejectingCancel, setIsRejectingCancel] = useState(false);
   const [showRatingModal, setShowRatingModal] = useState(false);
+  const [showMobileChat, setShowMobileChat] = useState(false);
   const [ratingData, setRatingData] = useState({
     stars: 5,
     skillRating: 5,
@@ -48,17 +52,10 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
   const fetchOrders = async () => {
     setLoading(true);
     try {
-      const endpoint = user.role === 'kijo' ? `/api/kijo/sessions/${user.id}` : `/api/jokies/orders/${user.id}`;
-      const res = await fetch(endpoint);
+      const res = await fetchWithAuth(`/api/jokies/orders/${user.id}`);
       if (res.ok) {
         const data = await res.json();
-        // Kijo endpoint returns grouped object { upcoming, ongoing, history }
-        if (user.role === 'kijo') {
-          const allOrders = [...data.upcoming, ...data.ongoing, ...data.history];
-          setOrders(allOrders);
-        } else {
-          setOrders(data);
-        }
+        setOrders(data);
       }
     } catch (error) {
       console.error('Error fetching orders:', error);
@@ -78,16 +75,12 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
       const res = await fetchWithAuth('/api/orders/cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orderId: selectedOrder.id,
-          userId: user.id,
-          role: user.role,
-          reason: cancelReason
-        })
+        body: JSON.stringify({ orderId: selectedOrder.id, reason: cancelReason })
       });
       const data = await res.json();
       if (res.ok) {
-        showAlert('Pesanan berhasil dibatalkan. Saldo telah dikembalikan ke Wallet Jokies.', 'success');
+        showAlert(data.message || 'Permintaan pembatalan telah dikirim.', 'success');
+        setCancelReason('');
         setSelectedOrder(null);
         fetchOrders();
       } else {
@@ -106,10 +99,7 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
       const res = await fetchWithAuth('/api/jokies/confirm-finish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orderId: selectedOrder.id,
-          jokiesId: user.id
-        })
+        body: JSON.stringify({ orderId: selectedOrder.id })
       });
       if (res.ok) {
         setShowRatingModal(true);
@@ -123,6 +113,45 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
     } finally {
       setIsCompleting(false);
     }
+  };
+
+  const handleAgreeCancel = async () => {
+    setIsAgreeingCancel(true);
+    try {
+      const res = await fetchWithAuth('/api/orders/agree-cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: selectedOrder.id })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showAlert('Pembatalan disetujui.', 'success');
+        setSelectedOrder(null);
+        fetchOrders();
+      } else {
+        showAlert(data.message || 'Gagal menyetujui pembatalan', 'error');
+      }
+    } catch { showAlert('Terjadi kesalahan', 'error'); }
+    finally { setIsAgreeingCancel(false); }
+  };
+
+  const handleRejectCancel = async () => {
+    setIsRejectingCancel(true);
+    try {
+      const res = await fetchWithAuth('/api/orders/reject-cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: selectedOrder.id })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showAlert('Pembatalan ditolak. Masalah dieskalasi ke Admin.', 'warning');
+        fetchOrders();
+      } else {
+        showAlert(data.message || 'Gagal menolak pembatalan', 'error');
+      }
+    } catch { showAlert('Terjadi kesalahan', 'error'); }
+    finally { setIsRejectingCancel(false); }
   };
 
   const handleSubmitRating = async () => {
@@ -149,8 +178,8 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
   };
 
   const groupedOrders = {
-    upcoming: [...orders.filter(o => o.status === 'upcoming')].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime()),
-    ongoing: [...orders.filter(o => o.status === 'ongoing')].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime()),
+    upcoming: [...orders.filter(o => o.status === 'upcoming')].sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()),
+    ongoing: [...orders.filter(o => ['ongoing', 'pending_completion', 'pending_cancellation'].includes(o.status))].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime()),
     history: [...orders.filter(o => o.status === 'completed' || o.status === 'cancelled')].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime())
   };
 
@@ -168,74 +197,104 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
     }
   };
 
-  if (selectedOrder) {
+  // ─── Mobile Chat Full Page ───
+  if (showMobileChat && selectedOrder) {
     return (
-      <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
-        <button 
-          onClick={() => setSelectedOrder(null)}
+      <div className="fixed inset-0 z-[120] bg-bg-main flex flex-col">
+        <div className="p-4 border-b border-border-main bg-bg-sidebar flex items-center gap-3">
+          <button onClick={() => setShowMobileChat(false)} className="p-2 text-text-muted hover:text-orange-primary">
+            <ArrowLeft size={20} />
+          </button>
+          <div>
+            <h3 className="text-sm font-bold text-text-main">Chat Pesanan #{selectedOrder.id}</h3>
+            <p className="text-xs text-text-muted">{selectedOrder.title}</p>
+          </div>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <OrderChat
+            sessionId={selectedOrder.id}
+            userId={user.id}
+            username={user.username || user.full_name}
+            isActive={!['completed', 'cancelled'].includes(selectedOrder.status)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Order Detail View ───
+  if (selectedOrder) {
+    const isActive = ['ongoing', 'pending_completion', 'pending_cancellation'].includes(selectedOrder.status);
+
+    return (
+      <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300 pb-20">
+        <button
+          onClick={() => { setSelectedOrder(null); setCancelReason(''); }}
           className="flex items-center gap-2 text-text-muted hover:text-orange-primary transition-colors font-bold uppercase text-xs tracking-widest"
         >
           <ArrowLeft size={16} /> Kembali ke Daftar
         </button>
 
         <div className="bg-bg-sidebar border border-border-main rounded-2xl overflow-hidden shadow-xl">
-          <div className="p-8 border-b border-border-main bg-bg-card/50">
+          {/* Header */}
+          <div className="p-6 md:p-8 border-b border-border-main bg-bg-card/50">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
               <div>
-                <div className="flex flex-wrap items-center gap-2 md:gap-3 mb-2">
-                  <span className="text-[11px] md:text-xs font-bold bg-orange-primary/10 text-orange-primary px-2 py-1 rounded-md border border-orange-primary/20 uppercase tracking-widest">
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <span className="text-[11px] font-bold bg-orange-primary/10 text-orange-primary px-2 py-1 rounded-md border border-orange-primary/20 uppercase tracking-widest">
                     ID: #{selectedOrder.id}
                   </span>
-                  <span className={`text-[11px] md:text-xs font-bold px-2 py-1 rounded-md border uppercase tracking-widest ${
-                    selectedOrder.status === 'completed' ? 'bg-green-500/10 text-green-500 border-green-500/20' :
-                    selectedOrder.status === 'ongoing' ? 'bg-blue-500/10 text-blue-500 border-blue-500/20' :
-                    selectedOrder.status === 'cancelled' ? 'bg-red-500/10 text-red-500 border-red-500/20' :
-                    'bg-orange-primary/10 text-orange-primary border-orange-primary/20'
-                  }`}>
-                    {selectedOrder.status}
+                  <span className={`text-[11px] font-bold px-2 py-1 rounded-md border uppercase tracking-widest ${statusColor(selectedOrder.status)}`}>
+                    {statusLabel(selectedOrder.status)}
                   </span>
                 </div>
-                <h2 className="text-xl md:text-3xl font-bold text-text-main tracking-tight">
-                  {user.role === 'kijo' 
-                    ? (selectedOrder.jokies_nickname && selectedOrder.jokies_nickname !== '-' ? selectedOrder.jokies_nickname : selectedOrder.jokies_name)
-                    : (selectedOrder.kijo_nickname && selectedOrder.kijo_nickname !== '-' ? selectedOrder.kijo_nickname : selectedOrder.title)}
-                </h2>
-                <p className="text-text-muted text-xs md:text-sm mt-1">
-                  {selectedOrder.kijo_game_id && selectedOrder.kijo_game_id !== '-' ? selectedOrder.kijo_game_id : (selectedOrder.game_title || 'Game Session')}
-                </p>
+                <h2 className="text-xl md:text-3xl font-bold text-text-main tracking-tight">{selectedOrder.title}</h2>
+                <p className="text-text-muted text-xs mt-1">{selectedOrder.game_title || 'Game Session'}</p>
               </div>
               <div className="text-left md:text-right">
-                <p className="text-xs md:text-xs text-text-muted font-semibold uppercase tracking-wide mb-1">Total Pembayaran</p>
-                <p className="text-2xl md:text-3xl font-bold text-orange-primary font-mono">Rp {(selectedOrder.total_price || (selectedOrder.price + (selectedOrder.admin_fee || 0))).toLocaleString()}</p>
+                <p className="text-xs text-text-muted font-semibold uppercase tracking-wide mb-1">Total Pembayaran</p>
+                <p className="text-2xl md:text-3xl font-bold text-orange-primary font-mono">Rp {(selectedOrder.total_price || selectedOrder.price).toLocaleString()}</p>
               </div>
             </div>
           </div>
 
           <div className="p-5 md:p-8 grid grid-cols-1 lg:grid-cols-2 gap-6 md:gap-8">
             {/* Left Column: Details */}
-            <div className="space-y-8">
-              {/* Order Info */}
-              <div className="bg-bg-main/50 p-6 rounded-2xl border border-border-main">
+            <div className="space-y-6">
+              {/* Detail Pemesanan */}
+              <div className="bg-bg-main/50 p-5 md:p-6 rounded-2xl border border-border-main">
                 <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
                   <Calendar size={14} /> Detail Pemesanan
                 </h3>
                 <div className="grid grid-cols-2 gap-y-4">
                   <div>
                     <p className="text-xs text-text-muted font-bold uppercase">Tanggal Pesan</p>
-                    <p className="text-sm font-bold text-text-main">{new Date(selectedOrder.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                    <p className="text-sm font-bold text-text-main">{toJakartaDate(selectedOrder.created_at)}</p>
                   </div>
                   <div>
                     <p className="text-xs text-text-muted font-bold uppercase">Waktu Booking</p>
-                    <p className="text-sm font-bold text-text-main">{new Date(selectedOrder.created_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</p>
+                    <p className="text-sm font-bold text-text-main">{toJakartaTime(selectedOrder.created_at)}</p>
                   </div>
                   <div>
                     <p className="text-xs text-text-muted font-bold uppercase">Jadwal Mabar</p>
-                    <p className="text-sm font-bold text-orange-primary">{new Date(selectedOrder.scheduled_at).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                    <p className="text-sm font-bold text-orange-primary">{toJakartaDateTime(selectedOrder.scheduled_at)}</p>
                   </div>
                   <div>
                     <p className="text-xs text-text-muted font-bold uppercase">Durasi</p>
-                    <p className="text-sm font-bold text-text-main">{selectedOrder.duration} Jam</p>
+                    <p className="text-sm font-bold text-text-main">{formatDuration(selectedOrder.duration)}</p>
                   </div>
+                  {selectedOrder.game_title && (
+                    <div>
+                      <p className="text-xs text-text-muted font-bold uppercase">Game</p>
+                      <p className="text-sm font-bold text-text-main">{selectedOrder.game_title}</p>
+                    </div>
+                  )}
+                  {selectedOrder.quantity > 1 && (
+                    <div>
+                      <p className="text-xs text-text-muted font-bold uppercase">Jumlah</p>
+                      <p className="text-sm font-bold text-text-main">x{selectedOrder.quantity}</p>
+                    </div>
+                  )}
                   {selectedOrder.rank_start && (
                     <div>
                       <p className="text-xs text-text-muted font-bold uppercase">Rank Awal</p>
@@ -251,8 +310,8 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                 </div>
               </div>
 
-              {/* Payment Detail */}
-              <div className="bg-bg-main/50 p-6 rounded-2xl border border-border-main">
+              {/* Rincian Pembayaran */}
+              <div className="bg-bg-main/50 p-5 md:p-6 rounded-2xl border border-border-main">
                 <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
                   <CreditCard size={14} /> Rincian Pembayaran
                 </h3>
@@ -265,100 +324,68 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                     <span className="text-text-muted">Biaya Penanganan</span>
                     <span className="font-bold text-text-main">Rp {(selectedOrder.admin_fee || 0).toLocaleString()}</span>
                   </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-text-muted">Metode Pembayaran</span>
+                    <span className="font-bold text-text-main">{selectedOrder.payment_method || '-'}</span>
+                  </div>
                   <div className="flex justify-between pt-2 border-t border-border-main">
                     <span className="font-bold text-text-main uppercase text-xs">Total Keseluruhan</span>
-                    <span className="font-bold text-orange-primary">Rp {(selectedOrder.total_price || (selectedOrder.price + (selectedOrder.admin_fee || 0))).toLocaleString()}</span>
+                    <span className="font-bold text-orange-primary">Rp {(selectedOrder.total_price || selectedOrder.price).toLocaleString()}</span>
                   </div>
                 </div>
               </div>
 
               {/* Participants */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Box 1: Jokies */}
-                <div className="bg-bg-main/50 p-6 rounded-2xl border border-border-main">
-                  <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
+                {/* Jokies */}
+                <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
+                  <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-3 flex items-center gap-2">
                     <User size={14} /> Detail Jokies
                   </h3>
                   <div className="space-y-2">
-                    <p className="text-sm font-bold text-text-main">
-                      {user.role === 'kijo' 
-                        ? (selectedOrder.jokies_name || selectedOrder.jokies_username)
-                        : (user.full_name || user.username)}
-                    </p>
-                    {selectedOrder.status !== 'cancelled' ? (
-                      <>
-                        {selectedOrder.jokies_nickname && selectedOrder.jokies_nickname !== '-' && (
-                          <p className="text-xs text-text-muted">Nick: <span className="text-text-main font-bold">{selectedOrder.jokies_nickname}</span></p>
-                        )}
-                        {selectedOrder.jokies_game_id && selectedOrder.jokies_game_id !== '-' && (
-                          <p className="text-xs text-text-muted">ID: <span className="text-text-main font-bold">{selectedOrder.jokies_game_id}</span></p>
-                        )}
-                        {selectedOrder.jokies_dynamic_data && renderDynamicData(selectedOrder.jokies_dynamic_data)}
-                        {!selectedOrder.jokies_nickname && !selectedOrder.jokies_game_id && !selectedOrder.jokies_dynamic_data && (
-                          <p className="text-xs text-text-muted italic">Data akun tidak tersedia.</p>
-                        )}
-                      </>
-                    ) : (
-                      <p className="text-xs text-text-muted italic">Detail akun disembunyikan karena pesanan dibatalkan</p>
-                    )}
+                    <p className="text-sm font-bold text-text-main">{user.full_name || user.username}</p>
+                    {selectedOrder.status !== 'cancelled' && selectedOrder.jokies_dynamic_data && renderDynamicData(selectedOrder.jokies_dynamic_data)}
                   </div>
                 </div>
-
-                {/* Box 2: Kijo */}
-                <div className="bg-bg-main/50 p-6 rounded-2xl border border-border-main">
-                  <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
+                {/* Kijo */}
+                <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
+                  <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-3 flex items-center gap-2">
                     <Zap size={14} className="text-orange-primary" /> Detail Kijo
                   </h3>
                   <div className="space-y-2">
-                    <p className="text-sm font-bold text-text-main">
-                      {user.role === 'kijo'
-                        ? (user.full_name || user.username)
-                        : (selectedOrder.kijo_name || selectedOrder.kijo_username || selectedOrder.title)}
-                    </p>
-                    {selectedOrder.status !== 'cancelled' ? (
-                      <>
-                        {selectedOrder.kijo_nickname && selectedOrder.kijo_nickname !== '-' && (
-                          <p className="text-xs text-text-muted">Nick: <span className="text-text-main font-bold">{selectedOrder.kijo_nickname}</span></p>
-                        )}
-                        {selectedOrder.kijo_game_id && selectedOrder.kijo_game_id !== '-' && (
-                          <p className="text-xs text-text-muted">ID: <span className="text-text-main font-bold">{selectedOrder.kijo_game_id}</span></p>
-                        )}
-                        {selectedOrder.kijo_dynamic_data && renderDynamicData(selectedOrder.kijo_dynamic_data)}
-                        {!selectedOrder.kijo_nickname && !selectedOrder.kijo_game_id && !selectedOrder.kijo_dynamic_data && (
-                          <p className="text-xs text-text-muted italic">Data akun tidak tersedia.</p>
-                        )}
-                      </>
-                    ) : (
-                      <p className="text-xs text-text-muted italic">Detail akun disembunyikan karena pesanan dibatalkan</p>
+                    <p className="text-sm font-bold text-text-main">{selectedOrder.kijo_name || selectedOrder.kijo_username || selectedOrder.title}</p>
+                    {selectedOrder.status !== 'cancelled' && selectedOrder.kijo_dynamic_data && renderDynamicData(selectedOrder.kijo_dynamic_data)}
+                    {selectedOrder.status === 'cancelled' && (
+                      <p className="text-xs text-text-muted italic">Detail disembunyikan karena pesanan dibatalkan</p>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* Proof Section (Only for Ongoing/Completed) */}
-              {(selectedOrder.status === 'ongoing' || selectedOrder.status === 'completed') && (
-                <div className="bg-bg-main/50 p-6 rounded-2xl border border-border-main">
+              {/* Bukti Pengerjaan (read-only for Jokies) */}
+              {(isActive || selectedOrder.status === 'completed') && (
+                <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
                   <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
                     <ImageIcon size={14} /> Bukti Pengerjaan
                   </h3>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <p className="text-xs text-text-muted font-bold uppercase text-center">Rank Awal</p>
+                      <p className="text-xs text-text-muted font-bold uppercase text-center">Sebelum</p>
                       <div className="aspect-video bg-bg-sidebar rounded-xl border border-border-main flex items-center justify-center overflow-hidden">
                         {selectedOrder.screenshot_start ? (
-                          <img src={selectedOrder.screenshot_start} className="w-full h-full object-cover" />
+                          <img src={selectedOrder.screenshot_start} className="w-full h-full object-cover" alt="Bukti sebelum" />
                         ) : (
-                          <span className="text-xs text-text-muted italic">Belum diunggah</span>
+                          <span className="text-xs text-text-muted italic">Belum diunggah oleh Kijo</span>
                         )}
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <p className="text-xs text-text-muted font-bold uppercase text-center">Rank Akhir</p>
+                      <p className="text-xs text-text-muted font-bold uppercase text-center">Sesudah</p>
                       <div className="aspect-video bg-bg-sidebar rounded-xl border border-border-main flex items-center justify-center overflow-hidden">
                         {selectedOrder.screenshot_end ? (
-                          <img src={selectedOrder.screenshot_end} className="w-full h-full object-cover" />
+                          <img src={selectedOrder.screenshot_end} className="w-full h-full object-cover" alt="Bukti sesudah" />
                         ) : (
-                          <span className="text-xs text-text-muted italic">Belum diunggah</span>
+                          <span className="text-xs text-text-muted italic">Belum diunggah oleh Kijo</span>
                         )}
                       </div>
                     </div>
@@ -368,81 +395,135 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
 
               {/* Actions */}
               <div className="space-y-4">
-                {(selectedOrder.status === 'upcoming' || selectedOrder.status === 'ongoing') && (
-                  <div className="bg-red-500/5 p-6 rounded-2xl border border-red-500/20">
-                    <h3 className="text-xs font-bold text-red-500 uppercase tracking-widest mb-4">Batalkan Pesanan</h3>
-                    <p className="text-xs text-text-muted mb-4 italic">
-                      * Pembatalan hanya dapat dilakukan setelah 15 menit pesanan dibuat.
+                {/* Pending Completion: Jokies must confirm */}
+                {selectedOrder.status === 'pending_completion' && (
+                  <div className="bg-green-500/5 p-5 rounded-2xl border border-green-500/20">
+                    <h3 className="text-xs font-bold text-green-500 uppercase tracking-widest mb-3">Konfirmasi Selesai</h3>
+                    <p className="text-xs text-text-muted mb-4 leading-relaxed">
+                      Partner telah menandai pesanan selesai. Pastikan pengerjaan sudah sesuai sebelum mengonfirmasi. Dana akan langsung diteruskan ke Partner.
                     </p>
-                    <textarea 
-                      placeholder="Alasan pembatalan..."
-                      className="w-full bg-bg-main border border-border-main rounded-xl p-4 text-sm text-text-main focus:outline-none focus:border-red-500 mb-4 h-24"
-                      value={cancelReason}
-                      onChange={(e) => setCancelReason(e.target.value)}
-                    />
-                    <button 
-                      onClick={handleCancelOrder}
-                      disabled={isCancelling}
-                      className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-4 rounded-xl shadow-lg shadow-red-500/10 transition-all flex items-center justify-center gap-2"
-                    >
-                      {isCancelling ? 'MEMPROSES...' : 'KONFIRMASI PEMBATALAN'}
-                    </button>
-                  </div>
-                )}
-
-                {selectedOrder.status === 'ongoing' && selectedOrder.kijo_finished && !selectedOrder.jokies_finished && (
-                  <div className="bg-green-500/5 p-6 rounded-2xl border border-green-500/20">
-                    <h3 className="text-xs font-bold text-green-500 uppercase tracking-widest mb-4">Konfirmasi Selesai</h3>
-                    <p className="text-xs text-text-muted mb-6 leading-relaxed">
-                      Partner telah menandai pesanan ini selesai. Pastikan pengerjaan sudah sesuai sebelum mengonfirmasi. Dana akan langsung diteruskan ke Partner.
-                    </p>
-                    <button 
+                    <button
                       onClick={handleConfirmFinish}
                       disabled={isCompleting}
-                      className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-5 rounded-xl shadow-lg shadow-green-500/10 transition-all flex items-center justify-center gap-2"
+                      className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 rounded-xl shadow-lg shadow-green-500/10 transition-all disabled:opacity-50"
                     >
                       {isCompleting ? 'MEMPROSES...' : 'KONFIRMASI PESANAN SELESAI'}
                     </button>
                   </div>
                 )}
 
+                {/* Ongoing: waiting for Kijo to finish */}
                 {selectedOrder.status === 'ongoing' && !selectedOrder.kijo_finished && (
-                  <div className="bg-bg-main p-6 rounded-2xl border border-border-main text-center">
-                    <Clock className="mx-auto text-orange-primary mb-3" size={32} />
-                    <p className="text-sm font-bold text-text-main mb-1">Menunggu Partner</p>
-                    <p className="text-xs text-text-muted uppercase tracking-widest">Partner sedang mengerjakan pesanan Anda.</p>
+                  <div className="bg-bg-main p-5 rounded-2xl border border-border-main text-center">
+                    <Clock className="mx-auto text-orange-primary mb-2" size={28} />
+                    <p className="text-sm font-bold text-text-main mb-1">Partner Sedang Mengerjakan</p>
+                    <p className="text-xs text-text-muted">Pesanan Anda sedang dikerjakan oleh Partner.</p>
                   </div>
                 )}
 
+                {/* Pending Cancellation: agree/reject or waiting */}
+                {selectedOrder.status === 'pending_cancellation' && (
+                  <div className="space-y-3">
+                    {selectedOrder.cancel_escalated ? (
+                      <div className="w-full bg-red-500/10 border border-red-500/20 text-red-400 font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
+                        SENGKETA — MENUNGGU KEPUTUSAN ADMIN
+                      </div>
+                    ) : selectedOrder.cancelled_by === 'jokies' ? (
+                      <div className="w-full bg-orange-primary/10 border border-orange-primary/20 text-orange-primary font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
+                        MENUNGGU PERSETUJUAN PARTNER
+                      </div>
+                    ) : (
+                      <div className="bg-red-500/5 p-5 rounded-2xl border border-red-500/20">
+                        <h3 className="text-xs font-bold text-red-500 uppercase tracking-widest mb-3">Pembatalan Diminta Partner</h3>
+                        <p className="text-xs text-text-muted mb-4">
+                          Alasan: <span className="text-text-main italic">"{selectedOrder.cancellation_reason}"</span>
+                        </p>
+                        <p className="text-xs text-text-muted mb-4">
+                          Jika disetujui, pesanan dibatalkan dan refund penuh akan dikembalikan ke wallet Anda.
+                        </p>
+                        <div className="space-y-2">
+                          <button onClick={handleAgreeCancel} disabled={isAgreeingCancel}
+                            className="w-full bg-red-500 text-white font-bold py-3 rounded-xl text-xs uppercase tracking-widest hover:bg-red-600 transition-all disabled:opacity-50"
+                          >
+                            {isAgreeingCancel ? 'MEMPROSES...' : 'SETUJUI PEMBATALAN (REFUND PENUH)'}
+                          </button>
+                          <button onClick={handleRejectCancel} disabled={isRejectingCancel}
+                            className="w-full border border-border-main text-text-muted font-bold py-3 rounded-xl text-xs uppercase tracking-widest hover:bg-bg-card transition-all disabled:opacity-50"
+                          >
+                            {isRejectingCancel ? 'MEMPROSES...' : 'TOLAK (ESKALASI KE ADMIN)'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Cancel: available for upcoming/ongoing (not when already pending_cancellation) */}
+                {['upcoming', 'ongoing'].includes(selectedOrder.status) && (
+                  <div className="bg-red-500/5 p-5 rounded-2xl border border-red-500/20">
+                    <h3 className="text-xs font-bold text-red-500 uppercase tracking-widest mb-3">Batalkan Pesanan</h3>
+                    {selectedOrder.status === 'upcoming' && (() => {
+                      const minsUntil = (new Date(selectedOrder.scheduled_at).getTime() - Date.now()) / (1000 * 60);
+                      return minsUntil >= 60
+                        ? <p className="text-xs text-text-muted mb-3">Pembatalan otomatis tanpa persetujuan Partner. Refund sebesar harga paket (biaya admin tidak dikembalikan).</p>
+                        : <p className="text-xs text-text-muted mb-3">Kurang dari 1 jam sebelum sesi. Pembatalan memerlukan persetujuan Partner.</p>;
+                    })()}
+                    {selectedOrder.status === 'ongoing' && (
+                      <p className="text-xs text-text-muted mb-3">Sesi sedang berjalan. Pembatalan memerlukan persetujuan Partner.</p>
+                    )}
+                    <textarea
+                      placeholder="Alasan pembatalan..."
+                      className="w-full bg-bg-main border border-border-main rounded-xl p-3 text-sm text-text-main focus:outline-none focus:border-red-500 mb-3 h-20"
+                      value={cancelReason}
+                      onChange={(e) => setCancelReason(e.target.value)}
+                    />
+                    <button
+                      onClick={handleCancelOrder}
+                      disabled={isCancelling}
+                      className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-red-500/10 transition-all disabled:opacity-50"
+                    >
+                      {isCancelling ? 'MEMPROSES...' : 'KONFIRMASI PEMBATALAN'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Inactivity warning */}
                 {selectedOrder.needs_admin_chat && (
-                  <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl mb-4">
+                  <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl">
                     <p className="text-xs font-bold text-red-500 uppercase tracking-widest mb-1">Peringatan Inaktivitas</p>
-                    <p className="text-xs text-text-main leading-relaxed">Partner belum memulai sesi setelah 15 menit. Anda dapat menghubungi Admin untuk bantuan atau pembatalan.</p>
+                    <p className="text-xs text-text-main leading-relaxed">Partner belum memulai sesi setelah 15 menit. Silakan hubungi Admin untuk bantuan.</p>
                   </div>
                 )}
 
-                <button className={`w-full border font-bold py-4 rounded-xl transition-all flex items-center justify-center gap-2 ${
-                  selectedOrder.needs_admin_chat 
-                    ? 'bg-red-500 text-white border-red-500 shadow-lg shadow-red-500/20 animate-pulse' 
-                    : 'bg-bg-sidebar border-border-main text-text-main hover:border-orange-primary/30'
-                }`}>
-                  <MessageSquare size={18} /> CHAT ADMIN "MINOX"
+                <button className="w-full border bg-bg-sidebar border-border-main text-text-main hover:border-orange-primary/30 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2">
+                  <MessageSquare size={16} /> CHAT ADMIN "MINOX"
                 </button>
               </div>
             </div>
 
             {/* Right Column: Order Chat */}
             {selectedOrder.status !== 'pending' && (
-              <div className="space-y-8 lg:sticky lg:top-4 self-start">
-                <OrderChat
-                  sessionId={selectedOrder.id}
-                  userId={user.id}
-                  username={user.username || user.full_name}
-                  isActive={!['completed', 'cancelled'].includes(selectedOrder.status)}
-                />
+              <div className="space-y-6 self-start">
+                {/* Desktop: show inline chat */}
+                <div className="hidden lg:block lg:sticky lg:top-4">
+                  <OrderChat
+                    sessionId={selectedOrder.id}
+                    userId={user.id}
+                    username={user.username || user.full_name}
+                    isActive={!['completed', 'cancelled'].includes(selectedOrder.status)}
+                  />
+                </div>
+                {/* Mobile/Tablet: show button to open chat */}
+                <div className="lg:hidden">
+                  <button
+                    onClick={() => setShowMobileChat(true)}
+                    className="w-full bg-orange-primary text-black font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-orange-primary/10"
+                  >
+                    <MessageSquare size={18} /> BUKA CHAT PESANAN
+                  </button>
+                </div>
               </div>
             )}
-
           </div>
         </div>
 
@@ -450,32 +531,21 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
         <AnimatePresence>
           {showRatingModal && (
             <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-              />
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80 backdrop-blur-sm" />
+              <motion.div initial={{ opacity: 0, scale: 0.9, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9, y: 20 }}
                 className="relative w-full max-w-lg bg-bg-sidebar border border-border-main rounded-2xl overflow-hidden shadow-2xl"
               >
-                <div className="p-8 border-b border-border-main bg-bg-card/50 text-center">
+                <div className="p-6 border-b border-border-main bg-bg-card/50 text-center">
                   <h3 className="text-2xl font-bold text-text-main mb-2">Beri Rating Untuk KIJO</h3>
                   <p className="text-text-muted text-sm">Bagaimana pengalaman mabar Anda dengan {selectedOrder.kijo_name}?</p>
                 </div>
-
-                <div className="p-8 space-y-8 max-h-[60vh] overflow-y-auto">
+                <div className="p-6 space-y-6 max-h-[60vh] overflow-y-auto">
                   {/* Stars */}
-                  <div className="flex flex-col items-center gap-4">
+                  <div className="flex flex-col items-center gap-3">
                     <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Kepuasan Umum (Wajib)</p>
                     <div className="flex gap-2">
                       {[1, 2, 3, 4, 5].map((s) => (
-                        <button 
-                          key={s} 
-                          onClick={() => setRatingData({...ratingData, stars: s})}
+                        <button key={s} onClick={() => setRatingData({...ratingData, stars: s})}
                           className={`p-2 transition-all ${ratingData.stars >= s ? 'text-orange-primary scale-110' : 'text-text-muted opacity-30'}`}
                         >
                           <Star size={32} fill={ratingData.stars >= s ? 'currentColor' : 'none'} />
@@ -483,16 +553,12 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                       ))}
                     </div>
                   </div>
-
-                  {/* Categories */}
-                  <div className="grid grid-cols-2 gap-6">
-                    <div className="space-y-3">
-                      <p className="text-xs font-bold text-text-muted uppercase tracking-widest text-center">Kategori Skill</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <p className="text-xs font-bold text-text-muted uppercase tracking-widest text-center">Skill</p>
                       <div className="flex justify-center gap-1">
                         {[1, 2, 3, 4, 5].map((s) => (
-                          <button 
-                            key={s} 
-                            onClick={() => setRatingData({...ratingData, skillRating: s})}
+                          <button key={s} onClick={() => setRatingData({...ratingData, skillRating: s})}
                             className={`p-1 transition-all ${ratingData.skillRating >= s ? 'text-orange-primary' : 'text-text-muted opacity-30'}`}
                           >
                             <Star size={16} fill={ratingData.skillRating >= s ? 'currentColor' : 'none'} />
@@ -500,13 +566,11 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                         ))}
                       </div>
                     </div>
-                    <div className="space-y-3">
-                      <p className="text-xs font-bold text-text-muted uppercase tracking-widest text-center">Kategori Attitude</p>
+                    <div className="space-y-2">
+                      <p className="text-xs font-bold text-text-muted uppercase tracking-widest text-center">Attitude</p>
                       <div className="flex justify-center gap-1">
                         {[1, 2, 3, 4, 5].map((s) => (
-                          <button 
-                            key={s} 
-                            onClick={() => setRatingData({...ratingData, attitudeRating: s})}
+                          <button key={s} onClick={() => setRatingData({...ratingData, attitudeRating: s})}
                             className={`p-1 transition-all ${ratingData.attitudeRating >= s ? 'text-orange-primary' : 'text-text-muted opacity-30'}`}
                           >
                             <Star size={16} fill={ratingData.attitudeRating >= s ? 'currentColor' : 'none'} />
@@ -515,58 +579,41 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                       </div>
                     </div>
                   </div>
-
-                  {/* Badges */}
-                  <div className="space-y-4">
+                  <div className="space-y-3">
                     <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Pilih Keunggulan KIJO (Min. 1)</p>
                     <div className="flex flex-wrap gap-2">
                       {TRAIT_BADGES.map((badge) => (
-                        <button 
-                          key={badge.id}
+                        <button key={badge.id}
                           onClick={() => {
                             const tags = ratingData.tags.includes(badge.label)
                               ? ratingData.tags.filter(t => t !== badge.label)
                               : [...ratingData.tags, badge.label];
                             setRatingData({...ratingData, tags});
                           }}
-                          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all border ${
+                          className={`px-3 py-2 rounded-xl text-xs font-bold transition-all border ${
                             ratingData.tags.includes(badge.label)
                               ? 'bg-orange-primary border-orange-primary text-black'
                               : 'bg-bg-main border-border-main text-text-muted hover:border-orange-primary/30'
                           }`}
-                        >
-                          {badge.label}
-                        </button>
+                        >{badge.label}</button>
                       ))}
                     </div>
                   </div>
-
-                  {/* Comment */}
                   <div className="space-y-2">
                     <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Testimoni (Opsional)</p>
-                    <textarea 
-                      placeholder="Tuliskan kesan Anda..."
-                      className="w-full bg-bg-main border border-border-main rounded-xl p-4 text-sm text-text-main focus:outline-none focus:border-orange-primary h-24"
-                      value={ratingData.comment}
-                      onChange={(e) => setRatingData({...ratingData, comment: e.target.value})}
+                    <textarea placeholder="Tuliskan kesan Anda..."
+                      className="w-full bg-bg-main border border-border-main rounded-xl p-3 text-sm text-text-main focus:outline-none focus:border-orange-primary h-20"
+                      value={ratingData.comment} onChange={(e) => setRatingData({...ratingData, comment: e.target.value})}
                     />
                   </div>
                 </div>
-
-                <div className="p-8 border-t border-border-main bg-bg-card/50 flex gap-4">
-                  <button 
-                    onClick={() => setShowRatingModal(false)}
-                    className="flex-1 py-4 rounded-xl border border-border-main text-text-muted font-bold text-xs uppercase tracking-widest hover:bg-bg-main transition-all"
-                  >
-                    Nanti Saja
-                  </button>
-                  <button 
-                    onClick={handleSubmitRating}
-                    disabled={ratingData.tags.length === 0}
-                    className="flex-1 py-4 rounded-xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest hover:scale-[1.02] transition-all disabled:opacity-50 shadow-lg shadow-orange-primary/20"
-                  >
-                    KIRIM ULASAN
-                  </button>
+                <div className="p-6 border-t border-border-main bg-bg-card/50 flex gap-4">
+                  <button onClick={() => setShowRatingModal(false)}
+                    className="flex-1 py-3 rounded-xl border border-border-main text-text-muted font-bold text-xs uppercase tracking-widest hover:bg-bg-main transition-all"
+                  >Nanti Saja</button>
+                  <button onClick={handleSubmitRating} disabled={ratingData.tags.length === 0}
+                    className="flex-1 py-3 rounded-xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest hover:scale-[1.02] transition-all disabled:opacity-50 shadow-lg shadow-orange-primary/20"
+                  >KIRIM ULASAN</button>
                 </div>
               </motion.div>
             </div>
@@ -576,21 +623,19 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
     );
   }
 
+  // ─── Orders List View ───
   return (
-    <div className="space-y-6 md:space-y-10 pb-20 px-4 md:px-0">
-      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-6">
+    <div className="space-y-6 md:space-y-8 pb-20 px-4 md:px-0">
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl md:text-4xl font-bold text-text-main tracking-tighter uppercase">Pesanan <span className="text-orange-primary">Saya.</span></h1>
-          <p className="text-text-muted text-xs md:text-sm mt-1 font-medium">Kelola riwayat dan pantau status joki Anda secara real-time.</p>
+          <p className="text-text-muted text-xs md:text-sm mt-1 font-medium">Kelola dan pantau status joki Anda secara real-time.</p>
         </div>
-        <div className="flex flex-wrap items-center gap-4">
-          <button
-            onClick={fetchOrders}
-            className="bg-bg-sidebar border border-border-main p-4 rounded-2xl text-text-muted hover:text-orange-primary hover:border-orange-primary/30 transition-all shadow-sm"
-          >
-            <Zap size={20} />
-          </button>
-        </div>
+        <button onClick={fetchOrders}
+          className="bg-bg-sidebar border border-border-main p-3 rounded-xl text-text-muted hover:text-orange-primary hover:border-orange-primary/30 transition-all"
+        >
+          <Zap size={18} />
+        </button>
       </header>
 
       {loading ? (
@@ -599,212 +644,106 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
           <p className="text-xs font-bold text-text-muted uppercase tracking-widest animate-pulse">Sinkronisasi Pesanan...</p>
         </div>
       ) : orders.length === 0 ? (
-        <div className="bg-bg-sidebar border border-border-main rounded-2xl p-16 text-center space-y-6 shadow-sm">
-          <div className="w-24 h-24 bg-bg-main rounded-full flex items-center justify-center mx-auto text-text-muted border border-border-main shadow-inner">
-            <Package size={48} />
+        <div className="bg-bg-sidebar border border-border-main rounded-2xl p-12 text-center space-y-5">
+          <div className="w-20 h-20 bg-bg-main rounded-full flex items-center justify-center mx-auto text-text-muted border border-border-main">
+            <Package size={40} />
           </div>
           <div className="max-w-xs mx-auto">
             <h3 className="text-text-main font-bold text-xl mb-2">Belum Ada Pesanan</h3>
-            <p className="text-text-muted text-sm leading-relaxed">Sepertinya Anda belum memesan jasa KIJO. Cari partner terbaikmu sekarang!</p>
+            <p className="text-text-muted text-sm leading-relaxed">Cari partner terbaikmu sekarang!</p>
           </div>
-          <button onClick={onGoToMarketplace} className="bg-orange-primary text-black font-bold px-10 py-4 rounded-2xl text-xs uppercase tracking-widest hover:scale-105 transition-all shadow-xl shadow-orange-primary/10">
+          <button onClick={onGoToMarketplace} className="bg-orange-primary text-black font-bold px-8 py-3 rounded-2xl text-xs uppercase tracking-widest hover:scale-105 transition-all shadow-xl shadow-orange-primary/10">
             LIHAT MARKETPLACE
           </button>
         </div>
       ) : (
-        <div className="space-y-12">
-          {/* Upcoming Section */}
-          {groupedOrders.upcoming.length > 0 && (
-            <section>
-              <div className="flex items-center gap-3 mb-6">
-                <div className="w-8 h-8 rounded-lg bg-orange-primary/10 flex items-center justify-center text-orange-primary">
-                  <Calendar size={18} />
-                </div>
-                <h2 className="text-xs font-bold text-text-muted uppercase tracking-wider">Sesi Mendatang</h2>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {groupedOrders.upcoming.map(order => (
-                  <OrderCard key={order.id} order={order} onClick={() => setSelectedOrder(order)} />
-                ))}
-              </div>
-            </section>
-          )}
+        <div className="space-y-8">
+          {/* ─── Sesi Mendatang ─── */}
+          <OrderSection title="Sesi Mendatang" icon={<Calendar size={16} />} iconBg="bg-orange-primary/10" iconColor="text-orange-primary" count={groupedOrders.upcoming.length}>
+            {groupedOrders.upcoming.map(order => (
+              <OrderListCard key={order.id} order={order} onClick={() => setSelectedOrder(order)} />
+            ))}
+          </OrderSection>
 
-          {/* Ongoing Section */}
-          {groupedOrders.ongoing.length > 0 && (
-            <section>
-              <div className="flex items-center gap-3 mb-6">
-                <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-500">
-                  <Activity size={18} />
-                </div>
-                <h2 className="text-xs font-bold text-text-muted uppercase tracking-wider">Sedang Berjalan</h2>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {groupedOrders.ongoing.map(order => (
-                  <OrderCard key={order.id} order={order} onClick={() => setSelectedOrder(order)} active />
-                ))}
-              </div>
-            </section>
-          )}
+          {/* ─── Sedang Berjalan ─── */}
+          <OrderSection title="Sedang Berjalan" icon={<ActivityIcon size={16} />} iconBg="bg-blue-500/10" iconColor="text-blue-500" count={groupedOrders.ongoing.length}>
+            {groupedOrders.ongoing.map(order => (
+              <OrderListCard key={order.id} order={order} onClick={() => setSelectedOrder(order)} active />
+            ))}
+          </OrderSection>
 
-          {/* History Section */}
-          {groupedOrders.history.length > 0 && (
-            <section>
-              <div className="flex items-center gap-3 mb-6">
-                <div className="w-8 h-8 rounded-lg bg-bg-card flex items-center justify-center text-text-muted">
-                  <History size={18} />
-                </div>
-                <h2 className="text-xs font-bold text-text-muted uppercase tracking-wider">History Pesanan</h2>
-              </div>
-              <div className="grid grid-cols-1 gap-4">
-                {groupedOrders.history.map(order => (
-                  <div 
-                    key={order.id} 
-                    onClick={() => setSelectedOrder(order)}
-                    className="bg-bg-sidebar border border-border-main rounded-2xl p-6 flex flex-col md:flex-row md:items-center justify-between gap-6 hover:border-orange-primary/20 transition-all cursor-pointer group opacity-80 hover:opacity-100"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 bg-bg-main rounded-xl flex items-center justify-center text-text-muted border border-border-main group-hover:text-orange-primary transition-colors">
-                        <Gamepad2 size={24} />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
-                          <h4 className="text-text-main font-bold">{order.title}</h4>
-                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-widest ${
-                            order.status === 'completed' ? 'bg-green-500/10 text-green-500 border-green-500/20' : 'bg-red-500/10 text-red-500 border-red-500/20'
-                          }`}>
-                            {order.status}
-                          </span>
-                        </div>
-                        <p className="text-xs text-text-muted font-bold uppercase tracking-wider">
-                          {order.kijo_name} • {new Date(order.scheduled_at).toLocaleDateString('id-ID')}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-6">
-                      <div className="text-right">
-                        <p className="text-xs text-text-muted font-semibold uppercase tracking-wide">Total</p>
-                        <p className="text-lg font-bold text-text-main font-mono">Rp {(order.total_price || order.price).toLocaleString()}</p>
-                      </div>
-                      <ChevronRight size={20} className="text-text-muted group-hover:text-orange-primary transition-colors" />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
+          {/* ─── History ─── */}
+          <OrderSection title="History Pesanan" icon={<HistoryIcon size={16} />} iconBg="bg-bg-card" iconColor="text-text-muted" count={groupedOrders.history.length}>
+            {groupedOrders.history.map(order => (
+              <OrderListCard key={order.id} order={order} onClick={() => setSelectedOrder(order)} />
+            ))}
+          </OrderSection>
         </div>
       )}
     </div>
   );
 }
 
-const OrderCard: React.FC<{ order: any; onClick: () => void; active?: boolean }> = ({ order, onClick, active }) => {
-  const { showAlert } = useAlert();
-  const [canStart, setCanStart] = useState(false);
-  const [timeLeft, setTimeLeft] = useState<string | null>(null);
-
-  useEffect(() => {
-    const checkTime = () => {
-      if (order.status !== 'upcoming') {
-        setCanStart(false);
-        setTimeLeft(null);
-        return;
-      }
-      
-      const scheduledTime = new Date(order.scheduled_at).getTime();
-      const now = new Date().getTime();
-      const diffMs = scheduledTime - now;
-      const diffMinutes = diffMs / (1000 * 60);
-      
-      // Show button 10 minutes before start time
-      if (diffMinutes <= 10 && diffMinutes > -60) { // Show up to 1 hour after start if not started
-        setCanStart(true);
-      } else {
-        setCanStart(false);
-      }
-
-      // Countdown logic
-      if (diffMs > 0 && diffMs <= 10 * 60 * 1000) {
-        const mins = Math.floor(diffMs / 60000);
-        const secs = Math.floor((diffMs % 60000) / 1000);
-        setTimeLeft(`${mins}:${secs.toString().padStart(2, '0')}`);
-      } else {
-        setTimeLeft(null);
-      }
-    };
-
-    checkTime();
-    const interval = setInterval(checkTime, 1000);
-    return () => clearInterval(interval);
-  }, [order]);
-
-  const handleStartSession = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      const res = await fetchWithAuth('/api/orders/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId: order.id })
-      });
-      if (res.ok) {
-        showAlert('Sesi dimulai! Silakan hubungi Partner.', 'success');
-        window.location.reload();
-      }
-    } catch (error) {
-      console.error('Error starting session:', error);
-    }
-  };
-
+// ─── Section wrapper (box-in-box layout) ───
+function OrderSection({ title, icon, iconBg, iconColor, count, children }: {
+  title: string; icon: React.ReactNode; iconBg: string; iconColor: string; count: number; children: React.ReactNode;
+}) {
+  if (count === 0) return null;
   return (
-    <div 
+    <section className="bg-bg-sidebar border border-border-main rounded-2xl overflow-hidden">
+      <div className="flex items-center gap-3 p-4 md:p-5 border-b border-border-main">
+        <div className={`w-8 h-8 rounded-lg ${iconBg} flex items-center justify-center ${iconColor}`}>{icon}</div>
+        <h2 className="text-xs font-bold text-text-muted uppercase tracking-wider flex-1">{title}</h2>
+        <span className="text-xs font-mono font-bold text-text-muted">{count}</span>
+      </div>
+      <div className="p-3 md:p-4 space-y-3">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+// ─── Order list card (inside the section box) ───
+function OrderListCard({ order, onClick, active }: { order: any; onClick: () => void; active?: boolean }) {
+  return (
+    <div
       onClick={onClick}
-      className={`bg-bg-sidebar border rounded-2xl p-6 transition-all cursor-pointer group hover:scale-[1.02] ${
-        active ? 'border-blue-500/50 shadow-lg shadow-blue-500/5' : 'border-border-main hover:border-orange-primary/30'
+      className={`bg-bg-main border rounded-xl p-4 transition-all cursor-pointer group hover:scale-[1.01] ${
+        active ? 'border-blue-500/40 shadow-sm shadow-blue-500/5' : 'border-border-main hover:border-orange-primary/30'
       }`}
     >
-      <div className="flex justify-between items-start mb-4">
-        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${active ? 'bg-blue-500/10 text-blue-500' : 'bg-orange-primary/10 text-orange-primary'}`}>
-          <Gamepad2 size={24} />
+      <div className="flex items-center gap-3">
+        <div className={`w-10 h-10 rounded-xl flex-shrink-0 flex items-center justify-center ${active ? 'bg-blue-500/10 text-blue-500' : 'bg-orange-primary/10 text-orange-primary'}`}>
+          <Gamepad2 size={20} />
         </div>
-        <div className="flex flex-col items-end">
-          {timeLeft && (
-            <div className="bg-red-500 text-white text-[11px] font-bold px-2 py-0.5 rounded-full mb-1 animate-pulse flex items-center gap-1">
-              <Clock size={8} /> {timeLeft}
-            </div>
-          )}
-          <div className="text-right">
-            <p className="text-xs text-text-muted font-semibold uppercase tracking-wide">ID Pesanan</p>
-            <p className="text-xs font-bold text-text-main font-mono">#{order.id}</p>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5">
+            <h4 className="text-sm font-bold text-text-main truncate">{order.title}</h4>
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-widest flex-shrink-0 ${statusColor(order.status)}`}>
+              {statusLabel(order.status)}
+            </span>
           </div>
+          <p className="text-xs text-text-muted">
+            <span className="font-medium">{order.kijo_name || order.kijo_username}</span> &bull; {toJakartaDateTime(order.scheduled_at)}
+          </p>
         </div>
-      </div>
-      
-      <h4 className="text-lg font-bold text-text-main mb-1 group-hover:text-orange-primary transition-colors">
-        {order.title} {order.quantity > 1 ? `(x${order.quantity})` : ''}
-      </h4>
-      <p className="text-xs text-text-muted mb-4 flex items-center gap-2">
-        <Zap size={12} className="text-orange-primary" /> {order.kijo_name}
-      </p>
-
-      <div className="flex items-center justify-between pt-4 border-t border-border-main">
-        <div className="flex items-center gap-2">
-          <div className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-blue-500 animate-pulse' : 'bg-orange-primary'}`} />
-          <span className="text-xs font-bold text-text-muted uppercase tracking-widest">{order.scheduled_at}</span>
+        <div className="text-right flex-shrink-0">
+          <p className="text-sm font-bold text-text-main font-mono">Rp {(order.total_price || order.price).toLocaleString()}</p>
         </div>
-        <span className="text-sm font-bold text-text-main font-mono">Rp {(order.total_price || order.price).toLocaleString()}</span>
+        <ChevronRight size={16} className="text-text-muted group-hover:text-orange-primary transition-colors flex-shrink-0" />
       </div>
     </div>
   );
-};
+}
 
-const Activity: React.FC<{ size?: number; className?: string }> = ({ size = 18, className }) => (
+// ─── SVG icons (not available in lucide-react directly) ───
+const ActivityIcon: React.FC<{ size?: number; className?: string }> = ({ size = 18, className }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
     <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
   </svg>
 );
 
-const History: React.FC<{ size?: number; className?: string }> = ({ size = 18, className }) => (
+const HistoryIcon: React.FC<{ size?: number; className?: string }> = ({ size = 18, className }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
     <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
     <path d="M3 3v5h5"></path>

@@ -27,7 +27,8 @@ import {
   ShieldCheck,
   Gamepad2,
   Trophy,
-  Star
+  Star,
+  MessageSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import AuthPage from './components/AuthPage';
@@ -42,7 +43,9 @@ import { useAlert } from './components/AlertContext';
 import AdminSetupPage from './components/AdminSetupPage';
 import KijoVerificationPage from './components/KijoVerificationPage';
 import KijoStorePage from './components/KijoStorePage';
+import OrderChat from './components/OrderChat';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
+import { formatDuration, statusColor, statusLabel, toJakartaDT } from '@/utils/formatters';
 
 import { JOKIES_TRAITS } from './constants';
 import { 
@@ -91,6 +94,13 @@ interface Session {
   duration?: number;
   started_at?: string;
   total_price?: number;
+  screenshot_start?: string;
+  screenshot_end?: string;
+  cancelled_by?: string;
+  cancellation_reason?: string;
+  cancel_escalated?: number;
+  kijo_finished?: number;
+  jokies_finished?: number;
 }
 
 interface GroupedSessions {
@@ -122,7 +132,9 @@ export default function App() {
   const [isProcessingOrder, setIsProcessingOrder] = useState(false);
   const [orderActionModal, setOrderActionModal] = useState<{ type: 'finish' | 'cancel' | 'start', order: any } | null>(null);
   const [orderActionReason, setOrderActionReason] = useState('');
-  const [proofImageData, setProofImageData] = useState<string | null>(null);
+  const [proofBeforeData, setProofBeforeData] = useState<string | null>(null);
+  const [proofAfterData, setProofAfterData] = useState<string | null>(null);
+  const [showKijoMobileChat, setShowKijoMobileChat] = useState(false);
   const [selectedSession, setSelectedSession] = useState<any | null>(null);
   const [systemStatus, setSystemStatus] = useState<{ status: string, schedule?: any }>({ status: 'normal' });
   const [announcements, setAnnouncements] = useState<any[]>([]);
@@ -413,17 +425,16 @@ export default function App() {
 
       if (orderActionModal.type === 'finish') {
         endpoint = '/api/kijo/finish-order';
-        const proofImage = proofImageData || '';
-        body = { orderId: orderActionModal.order.id, kijoId: user.id, proofImage };
+        body = { orderId: orderActionModal.order.id };
       } else if (orderActionModal.type === 'cancel') {
         endpoint = '/api/orders/cancel';
-        body = { orderId: orderActionModal.order.id, userId: user.id, role: 'kijo', reason: orderActionReason };
+        body = { orderId: orderActionModal.order.id, reason: orderActionReason };
       } else if (orderActionModal.type === 'start') {
         endpoint = '/api/orders/start';
         body = { orderId: orderActionModal.order.id };
       }
 
-      const res = await fetch(endpoint, {
+      const res = await fetchWithAuth(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -434,20 +445,23 @@ export default function App() {
         if (orderActionModal.type === 'finish') successMsg = 'Pesanan ditandai selesai! Menunggu konfirmasi pelanggan.';
         else if (orderActionModal.type === 'cancel') successMsg = 'Pesanan berhasil dibatalkan.';
         else if (orderActionModal.type === 'start') successMsg = 'Sesi telah dimulai!';
-        
-        // SUGGESTION: Replace alert with a non-blocking toast notification or a success modal.
-        console.log('SUCCESS:', successMsg);
+
+        showAlert(successMsg, 'success');
         setOrderActionModal(null);
         setOrderActionReason('');
-        setProofImageData(null);
+        // After starting, go back to list so user lands on "Sedang Berjalan"
+        if (orderActionModal.type === 'start') {
+          setSelectedSession(null);
+          setProofBeforeData(null);
+          setProofAfterData(null);
+          setShowKijoMobileChat(false);
+        }
         fetchData();
       } else {
-        // SUGGESTION: Replace alert with a non-blocking toast notification or an error modal.
-        console.error('Order action failed:', data.message);
+        showAlert(data.message || 'Gagal memproses aksi pesanan', 'error');
       }
     } catch (error) {
-      // SUGGESTION: Replace alert with a non-blocking toast notification or an error modal.
-      console.error('Server error during order action:', error);
+      showAlert('Terjadi kesalahan server', 'error');
     } finally {
       setIsProcessingOrder(false);
     }
@@ -609,6 +623,23 @@ export default function App() {
         </>
       )}
 
+      {/* Floating Active Order Indicator */}
+      <FloatingOrderIndicator
+        user={user}
+        mode={mode}
+        view={view}
+        selectedSession={selectedSession}
+        selectedOrder={null}
+        onNavigate={(session: any) => {
+          if (mode === 'kijo') {
+            setView('dashboard');
+            setSelectedSession(session);
+          } else {
+            setView('orders');
+          }
+        }}
+      />
+
       {/* Bottom Navbar for Mobile */}
       {isMobile && (
         <nav className="fixed bottom-0 left-0 right-0 bg-bg-sidebar border-t border-border-main z-[60] flex items-center justify-around px-2 py-3 shadow-[0_-4px_20px_rgba(0,0,0,0.1)]">
@@ -755,6 +786,25 @@ export default function App() {
           <GlobalAnnouncements announcements={announcements} />
           {view === 'dashboard' && mode === 'kijo' && (
           <div className="animate-in fade-in duration-500">
+            {selectedSession ? (
+              <KijoOrderDetailView
+                selectedSession={selectedSession}
+                user={user}
+                showMobileChat={showKijoMobileChat}
+                setShowMobileChat={setShowKijoMobileChat}
+                proofBeforeData={proofBeforeData}
+                setProofBeforeData={setProofBeforeData}
+                proofAfterData={proofAfterData}
+                setProofAfterData={setProofAfterData}
+                onBack={() => { setSelectedSession(null); setProofBeforeData(null); setProofAfterData(null); setShowKijoMobileChat(false); }}
+                onStart={(session: any) => setOrderActionModal({ type: 'start', order: session })}
+                onFinish={(session: any) => setOrderActionModal({ type: 'finish', order: session })}
+                onCancel={(session: any) => setOrderActionModal({ type: 'cancel', order: session })}
+                showAlert={showAlert}
+                fetchData={fetchData}
+              />
+            ) : (
+            <>
             {/* Header */}
             <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 sm:gap-6 mb-8 sm:mb-10">
               <div>
@@ -850,12 +900,12 @@ export default function App() {
                 <SectionHeader icon={<Activity size={16} />} title="Sedang Berjalan" />
                 <div className="space-y-4">
                   {sessions.ongoing.length > 0 ? sessions.ongoing.map(session => (
-                    <OrderItem 
+                    <OrderItem
                       key={session.id}
-                      title={session.title} 
-                      user={session.customer_name} 
-                      price={`Rp ${new Intl.NumberFormat('id-ID').format(session.price)}`} 
-                      time={session.scheduled_at} 
+                      title={session.title}
+                      user={session.customer_name}
+                      price={`Rp ${new Intl.NumberFormat('id-ID').format(session.price)}`}
+                      time={session.scheduled_at}
                       active
                       onClick={() => setSelectedSession(session)}
                       details={{
@@ -863,10 +913,11 @@ export default function App() {
                         kijoId: user?.id ?? 0,
                         jokiesId: session.jokies_id ?? 0,
                         duration: session.duration ?? 0,
-                        startTime: session.started_at ?? ''
+                        startTime: session.started_at ?? session.scheduled_at,
+                        hasProofs: !!(session.screenshot_start && session.screenshot_end)
                       }}
-                      onFinish={() => setOrderActionModal({ type: 'finish', order: session })}
-                      onCancel={() => setOrderActionModal({ type: 'cancel', order: session })}
+                      onFinish={session.status === 'ongoing' ? () => setOrderActionModal({ type: 'finish', order: session }) : undefined}
+                      onCancel={session.status === 'ongoing' ? () => setOrderActionModal({ type: 'cancel', order: session }) : undefined}
                     />
                   )) : <p className="text-gray-600 text-xs italic">Tidak ada sesi berjalan</p>}
                 </div>
@@ -937,6 +988,8 @@ export default function App() {
                 </div>
               </div>
             </section>
+          </>
+          )}
           </div>
         )}
 
@@ -1243,8 +1296,8 @@ export default function App() {
                   {orderActionModal.type === 'finish' ? 'Selesaikan Pesanan' : orderActionModal.type === 'start' ? 'Mulai Sesi' : 'Batalkan Pesanan'}
                 </h3>
                 <p className="text-text-muted text-sm mb-6">
-                  {orderActionModal.type === 'finish' 
-                    ? 'Pastikan pengerjaan sudah selesai. Anda wajib menyertakan bukti (simulasi upload).' 
+                  {orderActionModal.type === 'finish'
+                    ? 'Konfirmasi penyelesaian pesanan. Pelanggan akan diminta untuk juga menekan tombol selesai.'
                     : orderActionModal.type === 'start'
                       ? 'Konfirmasi untuk memulai sesi pengerjaan sekarang.'
                       : 'Berikan alasan pembatalan yang jelas untuk pelanggan.'}
@@ -1260,45 +1313,8 @@ export default function App() {
                 )}
 
                 {orderActionModal.type === 'finish' && (
-                  <div className="mb-6">
-                    {proofImageData ? (
-                      <div className="relative rounded-xl overflow-hidden border border-border-main">
-                        <img src={proofImageData} alt="Bukti pengerjaan" className="w-full h-32 object-cover" />
-                        <button
-                          onClick={() => setProofImageData(null)}
-                          className="absolute top-2 right-2 p-1 bg-red-500 text-white rounded-lg text-xs font-bold"
-                        >
-                          Hapus
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const input = document.createElement('input');
-                          input.type = 'file';
-                          input.accept = 'image/*';
-                          input.onchange = (e) => {
-                            const file = (e.target as HTMLInputElement).files?.[0];
-                            if (!file) return;
-                            if (file.size > 2 * 1024 * 1024) {
-                              showAlert('Ukuran file maksimal 2MB', 'warning');
-                              return;
-                            }
-                            const reader = new FileReader();
-                            reader.onload = (ev) => {
-                              setProofImageData(ev.target?.result as string);
-                            };
-                            reader.readAsDataURL(file);
-                          };
-                          input.click();
-                        }}
-                        className="w-full p-4 bg-bg-main rounded-xl border border-dashed border-border-main flex flex-col items-center gap-3 hover:border-orange-primary transition-all"
-                      >
-                        <ImageIcon className="text-text-muted" size={32} />
-                        <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Unggah Bukti Pengerjaan</p>
-                      </button>
-                    )}
+                  <div className="mb-6 p-4 bg-green-500/10 border border-green-500/20 rounded-xl">
+                    <p className="text-xs text-green-400 font-semibold">Pastikan bukti <b>Sebelum</b> dan <b>Sesudah</b> sudah diunggah di halaman detail pesanan sebelum menyelesaikan.</p>
                   </div>
                 )}
 
@@ -1322,181 +1338,6 @@ export default function App() {
                   >
                     {isProcessingOrder ? 'MEMPROSES...' : 'KONFIRMASI'}
                   </button>
-                </div>
-              </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
-
-        {/* Session Detail Modal (Kijo Dashboard) */}
-        <AnimatePresence>
-          {selectedSession && (
-            <div className="fixed inset-0 z-[130] flex items-center justify-center p-4">
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setSelectedSession(null)}
-                className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-              />
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9, y: 20 }}
-                className="relative w-full max-w-2xl bg-bg-sidebar border border-border-main rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
-              >
-                {/* Header */}
-                <div className="p-6 border-b border-border-main bg-bg-card/50 flex items-center justify-between">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[11px] font-bold bg-orange-primary/10 text-orange-primary px-2 py-0.5 rounded-md border border-orange-primary/20 uppercase tracking-widest">
-                        ID: #{selectedSession.id}
-                      </span>
-                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md border uppercase tracking-widest ${
-                        selectedSession.status === 'completed' ? 'bg-green-500/10 text-green-500 border-green-500/20' :
-                        selectedSession.status === 'ongoing' ? 'bg-blue-500/10 text-blue-500 border-blue-500/20' :
-                        selectedSession.status === 'cancelled' ? 'bg-red-500/10 text-red-500 border-red-500/20' :
-                        'bg-orange-primary/10 text-orange-primary border-orange-primary/20'
-                      }`}>
-                        {selectedSession.status}
-                      </span>
-                    </div>
-                    <h3 className="text-xl font-bold text-text-main tracking-tight uppercase">{selectedSession.title}</h3>
-                  </div>
-                  <button onClick={() => setSelectedSession(null)} className="p-2 text-text-muted hover:text-orange-primary transition-colors">
-                    <X size={24} />
-                  </button>
-                </div>
-
-                {/* Content */}
-                <div className="p-6 space-y-6 overflow-y-auto">
-                  {/* Order Info */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-bg-main/50 p-4 rounded-2xl border border-border-main">
-                      <p className="text-xs text-text-muted font-bold uppercase tracking-widest mb-1">Jadwal Mabar</p>
-                      <p className="text-xs font-bold text-orange-primary">
-                        {new Date(selectedSession.scheduled_at).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })}
-                      </p>
-                    </div>
-                    <div className="bg-bg-main/50 p-4 rounded-2xl border border-border-main">
-                      <p className="text-xs text-text-muted font-bold uppercase tracking-widest mb-1">Total Pendapatan</p>
-                      <p className="text-xs font-bold text-text-main font-mono">
-                        Rp {(selectedSession.total_price || selectedSession.price).toLocaleString()}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Participants - Merged Boxes */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Jokies Box */}
-                    <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
-                      <h4 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
-                        <UserIcon size={14} /> Detail Jokies
-                      </h4>
-                      <div className="space-y-3">
-                        <div>
-                          <p className="text-[11px] text-text-muted font-bold uppercase">Nama / Username</p>
-                          <p className="text-sm font-bold text-text-main">{selectedSession.jokies_name || selectedSession.jokies_username || selectedSession.customer_name}</p>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border-main/30">
-                          <div>
-                            <p className="text-[11px] text-text-muted font-bold uppercase">Nick</p>
-                            <p className="text-xs font-bold text-text-main">{selectedSession.jokies_nickname || '-'}</p>
-                          </div>
-                          <div>
-                            <p className="text-[11px] text-text-muted font-bold uppercase">Game ID</p>
-                            <p className="text-xs font-bold text-text-main">{selectedSession.jokies_game_id || '-'}</p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Kijo Box */}
-                    <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
-                      <h4 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
-                        <Zap size={14} className="text-orange-primary" /> Detail Kijo
-                      </h4>
-                      <div className="space-y-3">
-                        <div>
-                          <p className="text-[11px] text-text-muted font-bold uppercase">Nama / Username</p>
-                          <p className="text-sm font-bold text-text-main">{user.full_name || user.username}</p>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border-main/30">
-                          <div>
-                            <p className="text-[11px] text-text-muted font-bold uppercase">Nick</p>
-                            <p className="text-xs font-bold text-text-main">{selectedSession.kijo_nickname || '-'}</p>
-                          </div>
-                          <div>
-                            <p className="text-[11px] text-text-muted font-bold uppercase">Game ID</p>
-                            <p className="text-xs font-bold text-text-main">{selectedSession.kijo_game_id || '-'}</p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Proof Section */}
-                  {(selectedSession.status === 'ongoing' || selectedSession.status === 'completed') && (
-                    <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
-                      <h4 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
-                        <ImageIcon size={14} /> Bukti Pengerjaan
-                      </h4>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <p className="text-[11px] text-text-muted font-bold uppercase text-center">Rank Awal</p>
-                          <div className="aspect-video bg-bg-sidebar rounded-xl border border-border-main flex items-center justify-center overflow-hidden">
-                            {selectedSession.screenshot_start ? (
-                              <img src={selectedSession.screenshot_start} className="w-full h-full object-cover" />
-                            ) : (
-                              <span className="text-xs text-text-muted italic">Belum diunggah</span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <p className="text-[11px] text-text-muted font-bold uppercase text-center">Rank Akhir</p>
-                          <div className="aspect-video bg-bg-sidebar rounded-xl border border-border-main flex items-center justify-center overflow-hidden">
-                            {selectedSession.screenshot_end ? (
-                              <img src={selectedSession.screenshot_end} className="w-full h-full object-cover" />
-                            ) : (
-                              <span className="text-xs text-text-muted italic">Belum diunggah</span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Footer Actions */}
-                <div className="p-6 border-t border-border-main bg-bg-card/50 flex gap-4">
-                  <button 
-                    onClick={() => setSelectedSession(null)}
-                    className="flex-1 py-3 rounded-xl border border-border-main text-text-muted font-bold text-xs uppercase tracking-widest hover:bg-bg-main transition-all"
-                  >
-                    Tutup
-                  </button>
-                  {selectedSession.status === 'upcoming' && (
-                    <button 
-                      onClick={() => {
-                        setSelectedSession(null);
-                        setOrderActionModal({ type: 'start', order: selectedSession });
-                      }}
-                      className="flex-1 py-3 rounded-xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest shadow-lg shadow-orange-primary/20 hover:scale-[1.02] transition-all"
-                    >
-                      Mulai Sesi
-                    </button>
-                  )}
-                  {selectedSession.status === 'ongoing' && (
-                    <button 
-                      onClick={() => {
-                        setSelectedSession(null);
-                        setOrderActionModal({ type: 'finish', order: selectedSession });
-                      }}
-                      className="flex-1 py-3 rounded-xl bg-green-500 text-white font-bold text-xs uppercase tracking-widest shadow-lg shadow-green-500/20 hover:scale-[1.02] transition-all"
-                    >
-                      Selesaikan
-                    </button>
-                  )}
                 </div>
               </motion.div>
             </div>
@@ -1623,5 +1464,532 @@ function GlobalAnnouncements({ announcements }: { announcements: any[] }) {
         </motion.div>
       ))}
     </div>
+  );
+}
+
+/** Kijo Order Detail full-page view (replaces modal) */
+function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMobileChat, proofBeforeData, setProofBeforeData, proofAfterData, setProofAfterData, onBack, onStart, onFinish, onCancel, showAlert, fetchData }: any) {
+  const [isUploadingProof, setIsUploadingProof] = useState(false);
+  const [isAgreeingCancel, setIsAgreeingCancel] = useState(false);
+  const [isRejectingCancel, setIsRejectingCancel] = useState(false);
+  const session = selectedSession;
+  const isActive = ['ongoing', 'pending_completion', 'pending_cancellation'].includes(session.status);
+
+  const computeCanStart = () => {
+    if (session.status !== 'upcoming') return { can: false, text: '' };
+    const diffMs = new Date(session.scheduled_at).getTime() - Date.now();
+    if (diffMs / (1000 * 60) <= 15) return { can: true, text: '' };
+    const totalSecs = Math.max(0, Math.floor(diffMs / 1000));
+    const hours = Math.floor(totalSecs / 3600);
+    const mins = Math.floor((totalSecs % 3600) / 60);
+    const secs = totalSecs % 60;
+    return { can: false, text: hours > 0 ? `(${hours}j ${mins}m)` : `(${mins}:${secs.toString().padStart(2, '0')})` };
+  };
+
+  const computeFinishAndCancel = () => {
+    if (session.status !== 'ongoing') return { canFinish: false, canCancel: true, timerText: '', cancelText: '' };
+    const startedAt = session.started_at ?? session.scheduled_at;
+    const diffMs = Date.now() - new Date(startedAt).getTime();
+    const diffMins = diffMs / (1000 * 60);
+    const elapsed = diffMins >= 15;
+    const hasProofs = !!(session.screenshot_start && session.screenshot_end);
+    let timerText = '';
+    let cancelText = '';
+    if (!elapsed) {
+      const remainingMs = (15 * 60 * 1000) - diffMs;
+      const mins = Math.floor(remainingMs / 60000);
+      const secs = Math.floor((remainingMs % 60000) / 1000);
+      timerText = `${mins}:${secs.toString().padStart(2, '0')}`;
+      cancelText = timerText;
+    }
+    return { canFinish: elapsed && hasProofs, canCancel: elapsed, timerText, cancelText };
+  };
+
+  const [startState, setStartState] = useState(computeCanStart);
+  const [actionState, setActionState] = useState(computeFinishAndCancel);
+
+  useEffect(() => {
+    if (session.status !== 'upcoming') return;
+    const interval = setInterval(() => setStartState(computeCanStart()), 1000);
+    return () => clearInterval(interval);
+  }, [session.status, session.scheduled_at]);
+
+  useEffect(() => {
+    if (session.status !== 'ongoing') return;
+    const interval = setInterval(() => setActionState(computeFinishAndCancel()), 1000);
+    return () => clearInterval(interval);
+  }, [session.status, session.started_at, session.scheduled_at, session.screenshot_start, session.screenshot_end]);
+
+  const handleAgreeCancel = async () => {
+    setIsAgreeingCancel(true);
+    try {
+      const res = await fetchWithAuth('/api/orders/agree-cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: session.id })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showAlert('Pembatalan disetujui.', 'success');
+        onBack();
+        fetchData();
+      } else {
+        showAlert(data.message || 'Gagal menyetujui pembatalan', 'error');
+      }
+    } catch { showAlert('Terjadi kesalahan', 'error'); }
+    finally { setIsAgreeingCancel(false); }
+  };
+
+  const handleRejectCancel = async () => {
+    setIsRejectingCancel(true);
+    try {
+      const res = await fetchWithAuth('/api/orders/reject-cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: session.id })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showAlert('Pembatalan ditolak. Masalah dieskalasi ke Admin.', 'warning');
+        fetchData();
+      } else {
+        showAlert(data.message || 'Gagal menolak pembatalan', 'error');
+      }
+    } catch { showAlert('Terjadi kesalahan', 'error'); }
+    finally { setIsRejectingCancel(false); }
+  };
+
+  const handleFileUpload = (setter: (v: string | null) => void) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      if (file.size > 2 * 1024 * 1024) {
+        showAlert('Ukuran file maksimal 2MB', 'warning');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (ev) => setter(ev.target?.result as string);
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  };
+
+  const handleUploadProof = async () => {
+    if (!proofBeforeData && !proofAfterData) {
+      showAlert('Pilih minimal satu foto bukti', 'warning');
+      return;
+    }
+    setIsUploadingProof(true);
+    try {
+      const res = await fetchWithAuth('/api/kijo/update-proof', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: session.id,
+          proofBefore: proofBeforeData || undefined,
+          proofAfter: proofAfterData || undefined
+        })
+      });
+      if (res.ok) {
+        showAlert('Bukti pengerjaan berhasil diunggah!', 'success');
+        setProofBeforeData(null);
+        setProofAfterData(null);
+        fetchData();
+      } else {
+        const data = await res.json();
+        showAlert(data.message || 'Gagal mengunggah bukti', 'error');
+      }
+    } catch {
+      showAlert('Gagal mengunggah bukti', 'error');
+    } finally {
+      setIsUploadingProof(false);
+    }
+  };
+
+  const renderDynamicData = (dataString: string) => {
+    if (!dataString) return null;
+    try {
+      const data = JSON.parse(dataString);
+      return Object.entries(data).map(([key, value]) => (
+        <p key={key} className="text-xs text-text-muted">
+          {key}: <span className="text-text-main font-bold">{String(value)}</span>
+        </p>
+      ));
+    } catch { return null; }
+  };
+
+  // Mobile chat full page
+  if (showMobileChat) {
+    return (
+      <div className="fixed inset-0 z-[120] bg-bg-main flex flex-col">
+        <div className="p-4 border-b border-border-main bg-bg-sidebar flex items-center gap-3">
+          <button onClick={() => setShowMobileChat(false)} className="p-2 text-text-muted hover:text-orange-primary">
+            <ChevronLeft size={20} />
+          </button>
+          <div>
+            <h3 className="text-sm font-bold text-text-main">Chat Pesanan #{session.id}</h3>
+            <p className="text-xs text-text-muted">{session.title}</p>
+          </div>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <OrderChat
+            sessionId={session.id}
+            userId={user.id}
+            username={user.username || user.full_name}
+            isActive={!['completed', 'cancelled'].includes(session.status)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 pb-20">
+      <button onClick={onBack} className="flex items-center gap-2 text-text-muted hover:text-orange-primary transition-colors font-bold uppercase text-xs tracking-widest">
+        <ChevronLeft size={16} /> Kembali ke Dashboard
+      </button>
+
+      <div className="bg-bg-sidebar border border-border-main rounded-2xl overflow-hidden shadow-xl">
+        {/* Header */}
+        <div className="p-6 md:p-8 border-b border-border-main bg-bg-card/50">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <span className="text-[11px] font-bold bg-orange-primary/10 text-orange-primary px-2 py-1 rounded-md border border-orange-primary/20 uppercase tracking-widest">
+                  ID: #{session.id}
+                </span>
+                <span className={`text-[11px] font-bold px-2 py-1 rounded-md border uppercase tracking-widest ${statusColor(session.status)}`}>
+                  {statusLabel(session.status)}
+                </span>
+              </div>
+              <h2 className="text-xl md:text-3xl font-bold text-text-main tracking-tight">{session.title}</h2>
+              <p className="text-text-muted text-xs mt-1">{session.game_title || 'Game Session'}</p>
+            </div>
+            <div className="text-left md:text-right">
+              <p className="text-xs text-text-muted font-semibold uppercase tracking-wide mb-1">Pendapatan</p>
+              <p className="text-2xl md:text-3xl font-bold text-orange-primary font-mono">Rp {(session.total_price || session.price).toLocaleString()}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-5 md:p-8 grid grid-cols-1 lg:grid-cols-2 gap-6 md:gap-8">
+          {/* Left Column */}
+          <div className="space-y-6">
+            {/* Detail Pemesanan */}
+            <div className="bg-bg-main/50 p-5 md:p-6 rounded-2xl border border-border-main">
+              <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
+                <Calendar size={14} /> Detail Pemesanan
+              </h3>
+              <div className="grid grid-cols-2 gap-y-4">
+                <div>
+                  <p className="text-xs text-text-muted font-bold uppercase">Jadwal Mabar</p>
+                  <p className="text-sm font-bold text-orange-primary">{toJakartaDT(session.scheduled_at)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-text-muted font-bold uppercase">Durasi</p>
+                  <p className="text-sm font-bold text-text-main">{formatDuration(session.duration)}</p>
+                </div>
+                {session.quantity > 1 && (
+                  <div>
+                    <p className="text-xs text-text-muted font-bold uppercase">Jumlah</p>
+                    <p className="text-sm font-bold text-text-main">x{session.quantity}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Rincian Pembayaran */}
+            <div className="bg-bg-main/50 p-5 md:p-6 rounded-2xl border border-border-main">
+              <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
+                <Wallet size={14} /> Rincian Pembayaran
+              </h3>
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-text-muted">Harga Paket</span>
+                  <span className="font-bold text-text-main">Rp {(session.price * (session.quantity || 1)).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between pt-2 border-t border-border-main">
+                  <span className="font-bold text-text-main uppercase text-xs">Total Pendapatan</span>
+                  <span className="font-bold text-orange-primary">Rp {(session.total_price || session.price).toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Participants */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
+                <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-3 flex items-center gap-2">
+                  <UserIcon size={14} /> Detail Jokies
+                </h3>
+                <div className="space-y-2">
+                  <p className="text-sm font-bold text-text-main">{session.jokies_name || session.jokies_username || session.customer_name}</p>
+                  {session.status !== 'cancelled' && session.jokies_dynamic_data && renderDynamicData(session.jokies_dynamic_data)}
+                </div>
+              </div>
+              <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
+                <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-3 flex items-center gap-2">
+                  <Zap size={14} className="text-orange-primary" /> Detail Kijo
+                </h3>
+                <div className="space-y-2">
+                  <p className="text-sm font-bold text-text-main">{user.full_name || user.username}</p>
+                  {session.status !== 'cancelled' && session.kijo_dynamic_data && renderDynamicData(session.kijo_dynamic_data)}
+                </div>
+              </div>
+            </div>
+
+            {/* Bukti Pengerjaan (Kijo can upload) */}
+            {(isActive || session.status === 'completed') && (
+              <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
+                <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
+                  <ImageIcon size={14} /> Bukti Pengerjaan
+                </h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <p className="text-xs text-text-muted font-bold uppercase text-center">Sebelum</p>
+                    <div className="aspect-video bg-bg-sidebar rounded-xl border border-border-main flex items-center justify-center overflow-hidden relative group">
+                      {proofBeforeData || session.screenshot_start ? (
+                        <>
+                          <img src={proofBeforeData || session.screenshot_start} className="w-full h-full object-cover" alt="Bukti sebelum" />
+                          {isActive && (
+                            <button onClick={() => handleFileUpload(setProofBeforeData)} className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold">
+                              Ganti Foto
+                            </button>
+                          )}
+                        </>
+                      ) : isActive ? (
+                        <button onClick={() => handleFileUpload(setProofBeforeData)} className="w-full h-full flex flex-col items-center justify-center gap-1 hover:text-orange-primary transition-colors">
+                          <ImageIcon size={20} className="text-text-muted" />
+                          <span className="text-[10px] text-text-muted font-bold uppercase">Unggah</span>
+                        </button>
+                      ) : (
+                        <span className="text-xs text-text-muted italic">Tidak ada</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <p className="text-xs text-text-muted font-bold uppercase text-center">Sesudah</p>
+                    <div className="aspect-video bg-bg-sidebar rounded-xl border border-border-main flex items-center justify-center overflow-hidden relative group">
+                      {proofAfterData || session.screenshot_end ? (
+                        <>
+                          <img src={proofAfterData || session.screenshot_end} className="w-full h-full object-cover" alt="Bukti sesudah" />
+                          {isActive && (
+                            <button onClick={() => handleFileUpload(setProofAfterData)} className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold">
+                              Ganti Foto
+                            </button>
+                          )}
+                        </>
+                      ) : isActive ? (
+                        <button onClick={() => handleFileUpload(setProofAfterData)} className="w-full h-full flex flex-col items-center justify-center gap-1 hover:text-orange-primary transition-colors">
+                          <ImageIcon size={20} className="text-text-muted" />
+                          <span className="text-[10px] text-text-muted font-bold uppercase">Unggah</span>
+                        </button>
+                      ) : (
+                        <span className="text-xs text-text-muted italic">Tidak ada</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                {isActive && (proofBeforeData || proofAfterData) && (
+                  <button onClick={handleUploadProof} disabled={isUploadingProof}
+                    className="w-full mt-4 bg-orange-primary text-black font-bold py-3 rounded-xl text-xs uppercase tracking-widest shadow-lg shadow-orange-primary/10 disabled:opacity-50"
+                  >
+                    {isUploadingProof ? 'MENGUNGGAH...' : 'SIMPAN BUKTI PENGERJAAN'}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="space-y-4">
+              {/* Upcoming: Start Session */}
+              {session.status === 'upcoming' && (
+                <>
+                  <button
+                    disabled={!startState.can}
+                    onClick={() => onStart(session)}
+                    className={`w-full font-bold py-4 rounded-xl text-xs uppercase tracking-widest transition-all ${
+                      startState.can
+                        ? 'bg-orange-primary text-black shadow-lg shadow-orange-primary/20 hover:scale-[1.02] cursor-pointer'
+                        : 'bg-bg-card text-text-faint border border-border-main cursor-not-allowed opacity-60'
+                    }`}
+                  >
+                    {startState.can ? 'MULAI SESI' : `MULAI SESI ${startState.text}`}
+                  </button>
+                  <button onClick={() => onCancel(session)}
+                    className="w-full border border-red-500/30 text-red-500 font-bold py-3 rounded-xl text-xs uppercase tracking-widest hover:bg-red-500/10 transition-all"
+                  >
+                    BATALKAN PESANAN
+                  </button>
+                </>
+              )}
+
+              {/* Ongoing: Finish + Cancel (both with 15-min lock) */}
+              {session.status === 'ongoing' && (
+                <>
+                  <button
+                    disabled={!actionState.canFinish}
+                    onClick={() => onFinish(session)}
+                    className={`w-full font-bold py-4 rounded-xl text-xs uppercase tracking-widest transition-all ${
+                      actionState.canFinish
+                        ? 'bg-green-500 text-white shadow-lg shadow-green-500/20 hover:scale-[1.02] cursor-pointer'
+                        : 'bg-bg-card text-text-faint border border-border-main cursor-not-allowed opacity-60'
+                    }`}
+                  >
+                    {!actionState.canFinish && actionState.timerText
+                      ? `SELESAIKAN PESANAN (${actionState.timerText})`
+                      : !actionState.canFinish
+                        ? 'SELESAIKAN PESANAN (butuh bukti)'
+                        : 'SELESAIKAN PESANAN'}
+                  </button>
+                  {!actionState.canFinish && (
+                    <p className="text-xs text-text-muted text-center">
+                      {!session.screenshot_start || !session.screenshot_end
+                        ? 'Upload bukti sebelum & sesudah terlebih dahulu'
+                        : `Tombol aktif ${actionState.timerText} lagi`}
+                    </p>
+                  )}
+                  <button
+                    disabled={!actionState.canCancel}
+                    onClick={() => { if (actionState.canCancel) onCancel(session); }}
+                    className={`w-full border font-bold py-3 rounded-xl text-xs uppercase tracking-widest transition-all ${
+                      actionState.canCancel
+                        ? 'border-red-500/30 text-red-500 hover:bg-red-500/10'
+                        : 'border-border-main text-text-faint cursor-not-allowed opacity-50'
+                    }`}
+                  >
+                    {actionState.canCancel ? 'BATALKAN PESANAN' : `BATALKAN (${actionState.cancelText})`}
+                  </button>
+                </>
+              )}
+
+              {/* Pending Completion: waiting for Jokies */}
+              {session.status === 'pending_completion' && (
+                <div className="w-full bg-blue-500/10 border border-blue-500/20 text-blue-400 font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
+                  MENUNGGU KONFIRMASI PELANGGAN
+                </div>
+              )}
+
+              {/* Pending Cancellation: agree/reject UI */}
+              {session.status === 'pending_cancellation' && (
+                <div className="space-y-3">
+                  {session.cancel_escalated ? (
+                    <div className="w-full bg-red-500/10 border border-red-500/20 text-red-400 font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
+                      SENGKETA — MENUNGGU KEPUTUSAN ADMIN
+                    </div>
+                  ) : session.cancelled_by === 'kijo' ? (
+                    <div className="w-full bg-orange-primary/10 border border-orange-primary/20 text-orange-primary font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
+                      MENUNGGU PERSETUJUAN PELANGGAN
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-xs text-text-muted text-center">
+                        Pelanggan meminta pembatalan: <span className="text-text-main italic">"{session.cancellation_reason}"</span>
+                      </p>
+                      <button onClick={handleAgreeCancel} disabled={isAgreeingCancel}
+                        className="w-full bg-red-500 text-white font-bold py-4 rounded-xl text-xs uppercase tracking-widest hover:bg-red-600 transition-all disabled:opacity-50"
+                      >
+                        {isAgreeingCancel ? 'MEMPROSES...' : 'SETUJUI PEMBATALAN'}
+                      </button>
+                      <button onClick={handleRejectCancel} disabled={isRejectingCancel}
+                        className="w-full border border-border-main text-text-muted font-bold py-3 rounded-xl text-xs uppercase tracking-widest hover:bg-bg-card transition-all disabled:opacity-50"
+                      >
+                        {isRejectingCancel ? 'MEMPROSES...' : 'TOLAK (ESKALASI KE ADMIN)'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right Column: Chat */}
+          {session.status !== 'pending' && (
+            <div className="space-y-6 self-start">
+              <div className="hidden lg:block lg:sticky lg:top-4">
+                <OrderChat
+                  sessionId={session.id}
+                  userId={user.id}
+                  username={user.username || user.full_name}
+                  isActive={!['completed', 'cancelled'].includes(session.status)}
+                />
+              </div>
+              <div className="lg:hidden">
+                <button onClick={() => setShowMobileChat(true)}
+                  className="w-full bg-orange-primary text-black font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-orange-primary/10"
+                >
+                  <MessageSquare size={18} /> BUKA CHAT PESANAN
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Floating indicator showing active order - like Gojek's floating ride widget */
+function FloatingOrderIndicator({ user, mode, view, selectedSession, selectedOrder, onNavigate }: any) {
+  const [activeSession, setActiveSession] = useState<any>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetchWithAuth('/api/orders/active-session');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (data.hasActive) {
+          setActiveSession(data.session);
+        } else {
+          setActiveSession(null);
+        }
+      } catch { /* ignore */ }
+    };
+
+    poll();
+    const interval = setInterval(poll, 15000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  useEffect(() => {
+    if (!activeSession) { setVisible(false); return; }
+    // Hide when already viewing the order details
+    const isViewingKijoOrder = mode === 'kijo' && view === 'dashboard' && selectedSession?.id === activeSession.id;
+    const isViewingJokiesOrder = mode === 'jokies' && view === 'orders' && selectedOrder?.id === activeSession.id;
+    setVisible(!isViewingKijoOrder && !isViewingJokiesOrder);
+  }, [activeSession, mode, view, selectedSession, selectedOrder]);
+
+  if (!visible || !activeSession) return null;
+
+  return (
+    <motion.div
+      initial={{ y: 80, opacity: 0 }}
+      animate={{ y: 0, opacity: 1 }}
+      exit={{ y: 80, opacity: 0 }}
+      className="fixed bottom-20 md:bottom-6 right-4 md:right-8 z-[90]"
+    >
+      <button
+        onClick={() => onNavigate(activeSession)}
+        className="flex items-center gap-3 bg-orange-primary text-black pl-4 pr-5 py-3 rounded-2xl shadow-xl shadow-orange-primary/30 hover:scale-105 transition-all"
+      >
+        <div className="w-9 h-9 bg-black/10 rounded-xl flex items-center justify-center">
+          <Gamepad2 size={20} />
+        </div>
+        <div className="text-left">
+          <p className="text-xs font-bold truncate max-w-[140px]">{activeSession.title}</p>
+          <p className="text-[10px] font-semibold opacity-70">{statusLabel(activeSession.status)}</p>
+        </div>
+        {activeSession.unread_count > 0 && (
+          <span className="w-5 h-5 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-bounce">
+            {activeSession.unread_count > 9 ? '9+' : activeSession.unread_count}
+          </span>
+        )}
+      </button>
+    </motion.div>
   );
 }

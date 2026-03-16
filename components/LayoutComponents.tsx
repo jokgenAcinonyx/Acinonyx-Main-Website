@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
+import { formatDuration } from '@/utils/formatters';
 
 interface NavItemProps {
   icon: React.ReactNode;
@@ -130,13 +131,17 @@ interface OrderItemProps {
     jokiesId: number;
     duration: number;
     startTime: string;
+    hasProofs?: boolean;
   };
 }
 
 export const OrderItem: React.FC<OrderItemProps> = ({ title, user, price, time, active = false, completed = false, hoverEffect = false, onRate, onFinish, onCancel, onStart, onClick, details }) => {
   const [canFinish, setCanFinish] = useState(false);
+  const [canCancelNow, setCanCancelNow] = useState(true);
   const [canStartNow, setCanStartNow] = useState(false);
   const [timerText, setTimerText] = useState('');
+  const [cancelTimerText, setCancelTimerText] = useState('');
+  const [startTimerText, setStartTimerText] = useState('');
 
   useEffect(() => {
     const checkTime = () => {
@@ -147,6 +152,7 @@ export const OrderItem: React.FC<OrderItemProps> = ({ title, user, price, time, 
         const diffMs = now - start;
         const diffMins = diffMs / (1000 * 60);
 
+        // Finish button: 15 min elapsed
         if (diffMins >= 15) {
           setCanFinish(true);
           setTimerText('');
@@ -156,6 +162,18 @@ export const OrderItem: React.FC<OrderItemProps> = ({ title, user, price, time, 
           const mins = Math.floor(remainingMs / 60000);
           const secs = Math.floor((remainingMs % 60000) / 1000);
           setTimerText(`${mins}:${secs.toString().padStart(2, '0')}`);
+        }
+
+        // Cancel button: disabled for 15 min after session starts
+        if (diffMins >= 15) {
+          setCanCancelNow(true);
+          setCancelTimerText('');
+        } else {
+          setCanCancelNow(false);
+          const remainingMs = (15 * 60 * 1000) - diffMs;
+          const mins = Math.floor(remainingMs / 60000);
+          const secs = Math.floor((remainingMs % 60000) / 1000);
+          setCancelTimerText(`(${mins}:${secs.toString().padStart(2, '0')})`);
         }
       }
 
@@ -167,6 +185,15 @@ export const OrderItem: React.FC<OrderItemProps> = ({ title, user, price, time, 
           setCanStartNow(true);
         } else {
           setCanStartNow(false);
+          const totalSecs = Math.max(0, Math.floor(diffMs / 1000));
+          const hours = Math.floor(totalSecs / 3600);
+          const mins = Math.floor((totalSecs % 3600) / 60);
+          const secs = totalSecs % 60;
+          if (hours > 0) {
+            setStartTimerText(`(${hours}j ${mins}m)`);
+          } else {
+            setStartTimerText(`(${mins}:${secs.toString().padStart(2, '0')})`);
+          }
         }
       }
     };
@@ -206,7 +233,7 @@ export const OrderItem: React.FC<OrderItemProps> = ({ title, user, price, time, 
             </div>
             <div>
               <p className="text-[11px] text-text-muted font-medium">Durasi</p>
-              <p className="text-xs font-semibold text-text-main">{details.duration} Jam</p>
+              <p className="text-xs font-semibold text-text-main">{formatDuration(details.duration)}</p>
             </div>
           </div>
         </div>
@@ -223,31 +250,42 @@ export const OrderItem: React.FC<OrderItemProps> = ({ title, user, price, time, 
         {active && (
           <div className="flex gap-2">
             <button
-              onClick={(e) => { e.stopPropagation(); onCancel?.(); }}
-              className="text-[11px] font-semibold text-red-400 border border-red-500/20 px-2.5 py-1 rounded-lg hover:bg-red-500 hover:text-white hover:border-red-500 transition-all"
+              disabled={!canCancelNow}
+              onClick={(e) => { if (!canCancelNow) return; e.stopPropagation(); onCancel?.(); }}
+              className={`text-[11px] font-semibold border px-2.5 py-1 rounded-lg transition-all ${
+                canCancelNow
+                  ? 'text-red-400 border-red-500/20 hover:bg-red-500 hover:text-white hover:border-red-500'
+                  : 'text-text-faint border-border-main opacity-40 cursor-not-allowed'
+              }`}
             >
-              Batal
+              {canCancelNow ? 'Batal' : `Batal ${cancelTimerText}`}
             </button>
             <button
-              disabled={!canFinish}
+              disabled={!canFinish || !details?.hasProofs}
               onClick={(e) => { e.stopPropagation(); onFinish?.(); }}
               className={`text-[11px] font-semibold border px-2.5 py-1 rounded-lg transition-all ${
-                canFinish
+                canFinish && details?.hasProofs
                   ? 'text-emerald-400 border-emerald-500/20 hover:bg-emerald-500 hover:text-white hover:border-emerald-500'
                   : 'text-text-faint border-border-main opacity-50 cursor-not-allowed'
               }`}
+              title={!details?.hasProofs ? 'Upload bukti sebelum & sesudah terlebih dahulu' : !canFinish ? `Tunggu ${timerText} lagi` : ''}
             >
-              {canFinish ? 'Selesai' : `Selesai (${timerText})`}
+              {canFinish && details?.hasProofs ? 'Selesai' : !details?.hasProofs ? 'Selesai (butuh bukti)' : `Selesai (${timerText})`}
             </button>
           </div>
         )}
 
-        {onStart && !active && !completed && canStartNow && (
+        {onStart && !active && !completed && (
           <button
+            disabled={!canStartNow}
             onClick={(e) => { e.stopPropagation(); onStart(); }}
-            className="text-[11px] font-semibold text-orange-primary border border-orange-primary/20 px-3 py-1 rounded-lg hover:bg-orange-primary hover:text-black hover:border-orange-primary transition-all"
+            className={`text-[11px] font-semibold border px-3 py-1 rounded-lg transition-all ${
+              canStartNow
+                ? 'text-orange-primary border-orange-primary/20 hover:bg-orange-primary hover:text-black hover:border-orange-primary cursor-pointer'
+                : 'text-text-faint border-border-main opacity-40 cursor-not-allowed'
+            }`}
           >
-            Mulai Sesi
+            {canStartNow ? 'Mulai Sesi' : `Mulai Sesi ${startTimerText}`}
           </button>
         )}
 

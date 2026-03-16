@@ -182,10 +182,17 @@ async function startServer() {
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS kijo_finished TINYINT(1) DEFAULT 0",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS jokies_finished TINYINT(1) DEFAULT 0",
     "ALTER TABLE sessions MODIFY COLUMN IF EXISTS status ENUM('upcoming','ongoing','completed','cancelled','pending_completion','pending_cancellation') DEFAULT 'upcoming'",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS started_at DATETIME DEFAULT NULL",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS cancel_escalated TINYINT(1) DEFAULT 0",
   ];
   for (const sql of sessionsMigrations) {
     try { await db.query(sql); } catch (err) { console.warn('[Migration]', sql.slice(0, 60), err); }
   }
+
+  // Backfill started_at for pre-existing ongoing sessions that have no start time recorded
+  try {
+    await db.query("UPDATE sessions SET started_at = scheduled_at WHERE status IN ('ongoing','pending_completion','pending_cancellation') AND started_at IS NULL");
+  } catch (err) { console.warn('[Migration] started_at backfill failed:', err); }
 
   // Ensure packages has all required columns
   const packagesMigrations = [
@@ -1241,21 +1248,51 @@ async function startServer() {
   });
 
   // API: Get Orders for Buyer (Jokies)
-  app.get('/api/jokies/orders/:userId', async (req, res) => {
-    const { userId } = req.params;
+  app.get('/api/jokies/orders/:userId', requireAuth, async (req: any, res: any) => {
+    const userId = req.user.userId;
     try {
-      // Auto-start sessions check
-      const now = new Date().toISOString();
-      const sessionsToStart = (await db.prepare("SELECT id, user_id, jokies_id FROM sessions WHERE status = 'upcoming' AND scheduled_at <= ?").all(now)) as any[];
+      // Auto-start: only for THIS Jokies' upcoming sessions
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const sessionsToStart = (await db.prepare("SELECT id, user_id FROM sessions WHERE jokies_id = ? AND status = 'upcoming' AND scheduled_at <= ?").all(userId, nowIso)) as any[];
       
       for (const session of sessionsToStart) {
-        await db.prepare("UPDATE sessions SET status = 'ongoing' WHERE id = ?").run(session.id);
+        await db.prepare("UPDATE sessions SET status = 'ongoing', started_at = NOW() WHERE id = ?").run(session.id);
         await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-          session.user_id,
-          'system',
-          'Sesi Dimulai Otomatis',
+          session.user_id, 'system', 'Sesi Dimulai Otomatis',
           `Sesi #${session.id} telah dimulai secara otomatis karena sudah melewati waktu mulai.`
         );
+      }
+
+      // Auto-cancel: Jokies' upcoming sessions past scheduled_at + duration
+      try {
+        const expiredSessions = (await db.prepare(`
+          SELECT id, user_id, total_price, duration, scheduled_at
+          FROM sessions WHERE jokies_id = ? AND status = 'upcoming'
+        `).all(userId)) as any[];
+        for (const s of expiredSessions) {
+          const end = new Date(new Date(s.scheduled_at).getTime() + (s.duration || 1) * 60 * 60 * 1000);
+          if (now > end) {
+            await db.transaction(async () => {
+              await db.prepare("UPDATE sessions SET status = 'cancelled', cancelled_at = NOW(), cancelled_by = 'system', cancellation_reason = 'Otomatis dibatalkan: melewati waktu booking + durasi tanpa dimulai' WHERE id = ?").run(s.id);
+              if (s.total_price) {
+                await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(s.total_price, userId);
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  userId, 'order_update', 'Pesanan Dibatalkan Otomatis',
+                  `Pesanan #${s.id} dibatalkan otomatis karena melewati waktu booking. Dana Rp ${(s.total_price || 0).toLocaleString()} dikembalikan ke wallet Anda.`
+                );
+              }
+              if (s.user_id) {
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  s.user_id, 'system', 'Pesanan Expired',
+                  `Pesanan #${s.id} dibatalkan otomatis karena melewati waktu booking + durasi tanpa dimulai.`
+                );
+              }
+            })();
+          }
+        }
+      } catch (e) {
+        console.error('Auto-cancel expired jokies sessions error:', e);
       }
 
       const orders = (await db.prepare(`
@@ -1271,7 +1308,6 @@ async function startServer() {
         if (order.status === 'ongoing') {
           const scheduledTime = new Date(order.scheduled_at);
           const diffMins = (new Date().getTime() - scheduledTime.getTime()) / (1000 * 60);
-          // If session started > 15 mins ago and no screenshot_start yet
           if (diffMins > 15 && !order.screenshot_start) {
             return { ...order, needs_admin_chat: true };
           }
@@ -1430,9 +1466,9 @@ async function startServer() {
         }
 
         const insert = await db.prepare(`
-          INSERT INTO sessions (user_id, jokies_id, title, customer_name, price, admin_fee, total_price, quantity, player_count, scheduled_at, duration, status, game_title, rank_start, rank_end, payment_method, jokies_nickname, jokies_game_id, jokies_game_account_id, jokies_dynamic_data, kijo_nickname, kijo_game_id, kijo_game_account_id, kijo_dynamic_data, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(kijoId, jokiesId, title, jokies.full_name, price, adminFee, totalPrice, quantity || 1, player_count || 1, scheduledAt, duration || 1, 'upcoming', gameTitle, rankStart || '', rankEnd || '', paymentMethod, finalJokiesNickname, finalJokiesGameId, finalJokiesGameAccountId, finalJokiesDynamicData, kijoNickname, kijoGameId, kijoGameAccountId, kijoDynamicData, new Date().toISOString());
+          INSERT INTO sessions (user_id, jokies_id, title, customer_name, price, admin_fee, total_price, quantity, player_count, scheduled_at, duration, status, game_title, rank_start, rank_end, payment_method, jokies_nickname, jokies_game_id, jokies_game_account_id, jokies_dynamic_data, kijo_nickname, kijo_game_id, kijo_game_account_id, kijo_dynamic_data)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(kijoId, jokiesId, title, jokies.full_name, price, adminFee, totalPrice, quantity || 1, player_count || 1, scheduledAt, duration || 1, 'upcoming', gameTitle, rankStart || '', rankEnd || '', paymentMethod, finalJokiesNickname, finalJokiesGameId, finalJokiesGameAccountId, finalJokiesDynamicData, kijoNickname, kijoGameId, kijoGameAccountId, kijoDynamicData);
 
         await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
           kijoId, 'order_new', 'Pesanan Baru!',
@@ -1458,65 +1494,205 @@ async function startServer() {
   });
 
   // API: Cancel Order (Jokies or Kijo) - Now sends to Admin for verification
-  app.post('/api/orders/cancel', (req, res) => {
-    const { orderId, userId, role, reason, isAdminOverride } = req.body;
+  app.post('/api/orders/cancel', requireAuth, async (req: any, res: any) => {
+    const authUserId = req.user.userId;
+    const authRole = req.user.role;
+    const { orderId, reason } = req.body;
     try {
-      const order = db.prepare('SELECT *, datetime(created_at) as created_at_dt FROM sessions WHERE id = ?').get(orderId) as any;
+      const order = await db.prepare('SELECT * FROM sessions WHERE id = ?').get(orderId) as any;
       if (!order) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
-      
-      // Check if user is authorized
-      if (role === 'jokies' && order.jokies_id !== userId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-      if (role === 'kijo' && order.user_id !== userId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+
+      // Determine the caller's relationship to this order using JWT identity
+      let callerRole: string;
+      if (order.jokies_id === authUserId) callerRole = 'jokies';
+      else if (order.user_id === authUserId) callerRole = 'kijo';
+      else if (authRole === 'admin') callerRole = 'admin';
+      else return res.status(403).json({ success: false, message: 'Anda bukan peserta pesanan ini' });
 
       if (order.status !== 'upcoming' && order.status !== 'ongoing' && order.status !== 'pending_completion') {
         return res.status(400).json({ success: false, message: 'Pesanan tidak dapat dibatalkan pada status ini' });
       }
 
-      // 15-minute cooldown check
-      const createdAt = new Date(order.created_at_dt + 'Z');
-      const now = new Date();
-      const diffMinutes = (now.getTime() - createdAt.getTime()) / (1000 * 60);
-      
-      if (diffMinutes < 15 && !isAdminOverride) {
-        return res.status(403).json({ success: false, message: 'Pesanan tidak dapat dibatalkan dalam 15 menit pertama (Cooldown).' });
-      }
-
       if (!reason) return res.status(400).json({ success: false, message: 'Alasan pembatalan wajib diisi' });
 
-      db.prepare("UPDATE sessions SET status = 'pending_cancellation', cancellation_reason = ?, cancelled_at = ?, cancelled_by = ? WHERE id = ?").run(reason, new Date().toISOString(), role, orderId);
-      
-      // Notify Admin (implicitly via dashboard)
-      // Notify other user
-      const otherUserId = role === 'jokies' ? order.user_id : order.jokies_id;
-      db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-        otherUserId,
-        'system',
-        'Permintaan Pembatalan',
-        `Pesanan #${orderId} sedang diajukan pembatalan oleh ${role === 'jokies' ? 'Pelanggan' : 'Partner'}. Menunggu verifikasi Admin.`
+      // Admin can force-cancel via their own endpoint; this is for Kijo/Jokies
+      if (callerRole === 'admin') {
+        // Admin uses force-cancel endpoint instead
+        return res.status(400).json({ success: false, message: 'Admin gunakan endpoint force-cancel.' });
+      }
+
+      // Jokies auto-cancel: 1+ hour before scheduled_at, no agreement needed
+      if (callerRole === 'jokies' && order.status === 'upcoming') {
+        const scheduledAt = new Date(order.scheduled_at).getTime();
+        const now = Date.now();
+        const diffMinutes = (scheduledAt - now) / (1000 * 60);
+
+        if (diffMinutes >= 60) {
+          // Auto-cancel with partial refund (admin fee lost)
+          await db.transaction(async () => {
+            await db.prepare("UPDATE sessions SET status = 'cancelled', cancellation_reason = ?, cancelled_at = NOW(), cancelled_by = 'jokies' WHERE id = ?").run(reason, orderId);
+            // Partial refund: price only (admin fee lost)
+            if (order.payment_method !== 'Simulasi') {
+              await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(order.price, order.jokies_id);
+            }
+            // Set jokies lock
+            await db.prepare("UPDATE users SET jokies_lock_until = DATE_ADD(NOW(), INTERVAL 60 MINUTE) WHERE id = ?").run(order.jokies_id);
+            // Notify Kijo
+            await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+              order.user_id, 'system', 'Pesanan Dibatalkan',
+              `Pesanan #${orderId} telah dibatalkan oleh pelanggan. Alasan: ${reason}`
+            );
+            // Notify Jokies
+            await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+              order.jokies_id, 'system', 'Pembatalan Berhasil',
+              `Pesanan #${orderId} berhasil dibatalkan. Refund Rp ${order.price.toLocaleString()} (biaya admin tidak dikembalikan) telah dikembalikan ke wallet.`
+            );
+          })();
+          io.to('admin-room').emit('admin-refresh');
+          return res.json({ success: true, message: 'Pesanan berhasil dibatalkan. Refund (tanpa biaya admin) telah dikembalikan ke wallet.' });
+        }
+      }
+
+      // Peer agreement required: set to pending_cancellation
+      await db.prepare("UPDATE sessions SET status = 'pending_cancellation', cancellation_reason = ?, cancelled_at = NOW(), cancelled_by = ? WHERE id = ?").run(reason, callerRole, orderId);
+
+      // Notify the OTHER party to agree or reject
+      const otherUserId = callerRole === 'jokies' ? order.user_id : order.jokies_id;
+      const callerLabel = callerRole === 'jokies' ? 'Pelanggan' : 'Partner';
+      await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+        otherUserId, 'system', 'Permintaan Pembatalan',
+        `${callerLabel} mengajukan pembatalan pesanan #${orderId}. Silakan setujui atau tolak pembatalan.`
       );
 
-      res.json({ success: true, message: 'Permintaan pembatalan telah dikirim ke Admin untuk verifikasi.' });
+      io.to('admin-room').emit('admin-refresh');
+      res.json({ success: true, message: 'Permintaan pembatalan telah dikirim. Menunggu persetujuan pihak lain.' });
     } catch (error) {
       console.error('Cancel Order Error:', error);
       res.status(500).json({ success: false });
     }
   });
 
-  // API: Admin Approve Cancellation
-  app.post('/api/admin/sessions/:id/approve-cancel', async (req, res) => {
+  // API: Agree to Cancel (peer agreement)
+  app.post('/api/orders/agree-cancel', requireAuth, async (req: any, res: any) => {
+    const authUserId = req.user.userId;
+    const { orderId } = req.body;
+    try {
+      const order = await db.prepare('SELECT * FROM sessions WHERE id = ?').get(orderId) as any;
+      if (!order) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
+      if (order.status !== 'pending_cancellation') {
+        return res.status(400).json({ success: false, message: 'Pesanan tidak dalam status menunggu pembatalan' });
+      }
+
+      // Verify caller is the OTHER party (not the initiator)
+      const isJokies = order.jokies_id === authUserId;
+      const isKijo = order.user_id === authUserId;
+      if (!isJokies && !isKijo) return res.status(403).json({ success: false, message: 'Anda bukan peserta pesanan ini' });
+      if (order.cancelled_by === 'jokies' && isJokies) return res.status(400).json({ success: false, message: 'Anda yang mengajukan pembatalan, tunggu persetujuan pihak lain.' });
+      if (order.cancelled_by === 'kijo' && isKijo) return res.status(400).json({ success: false, message: 'Anda yang mengajukan pembatalan, tunggu persetujuan pihak lain.' });
+
+      await db.transaction(async () => {
+        await db.prepare("UPDATE sessions SET status = 'cancelled' WHERE id = ?").run(orderId);
+
+        // Refund logic: Jokies cancel = partial (price only), Kijo cancel = full (total_price)
+        if (order.payment_method !== 'Simulasi') {
+          const refundAmount = order.cancelled_by === 'jokies' ? order.price : order.total_price;
+          await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(refundAmount, order.jokies_id);
+        }
+
+        // Set jokies lock if jokies initiated
+        if (order.cancelled_by === 'jokies') {
+          await db.prepare("UPDATE users SET jokies_lock_until = DATE_ADD(NOW(), INTERVAL 60 MINUTE) WHERE id = ?").run(order.jokies_id);
+        }
+
+        const refundLabel = order.cancelled_by === 'jokies'
+          ? `Refund Rp ${order.price.toLocaleString()} (biaya admin tidak dikembalikan)`
+          : `Refund penuh Rp ${order.total_price.toLocaleString()}`;
+
+        // Notify both
+        await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+          order.jokies_id, 'system', 'Pembatalan Disetujui',
+          `Pembatalan pesanan #${orderId} telah disetujui. ${refundLabel} telah dikembalikan ke wallet.`
+        );
+        await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+          order.user_id, 'system', 'Pembatalan Disetujui',
+          `Pembatalan pesanan #${orderId} telah disetujui oleh kedua belah pihak.`
+        );
+      })();
+
+      io.to('admin-room').emit('admin-refresh');
+      res.json({ success: true, message: 'Pembatalan disetujui.' });
+    } catch (error) {
+      console.error('Agree Cancel Error:', error);
+      res.status(500).json({ success: false });
+    }
+  });
+
+  // API: Reject Cancel (escalate to admin)
+  app.post('/api/orders/reject-cancel', requireAuth, async (req: any, res: any) => {
+    const authUserId = req.user.userId;
+    const { orderId } = req.body;
+    try {
+      const order = await db.prepare('SELECT * FROM sessions WHERE id = ?').get(orderId) as any;
+      if (!order) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
+      if (order.status !== 'pending_cancellation') {
+        return res.status(400).json({ success: false, message: 'Pesanan tidak dalam status menunggu pembatalan' });
+      }
+
+      // Verify caller is the OTHER party
+      const isJokies = order.jokies_id === authUserId;
+      const isKijo = order.user_id === authUserId;
+      if (!isJokies && !isKijo) return res.status(403).json({ success: false, message: 'Anda bukan peserta pesanan ini' });
+      if (order.cancelled_by === 'jokies' && isJokies) return res.status(400).json({ success: false, message: 'Anda yang mengajukan pembatalan.' });
+      if (order.cancelled_by === 'kijo' && isKijo) return res.status(400).json({ success: false, message: 'Anda yang mengajukan pembatalan.' });
+
+      // Escalate to admin
+      await db.prepare("UPDATE sessions SET cancel_escalated = 1 WHERE id = ?").run(orderId);
+
+      const rejectorLabel = isJokies ? 'Pelanggan' : 'Partner';
+      // Notify both parties
+      await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+        order.jokies_id, 'system', 'Pembatalan Ditolak',
+        `${rejectorLabel} menolak pembatalan pesanan #${orderId}. Masalah dieskalasi ke Admin untuk keputusan akhir.`
+      );
+      await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+        order.user_id, 'system', 'Pembatalan Ditolak',
+        `${rejectorLabel} menolak pembatalan pesanan #${orderId}. Masalah dieskalasi ke Admin untuk keputusan akhir.`
+      );
+      // Notify admin
+      const admins = await db.prepare("SELECT id FROM users WHERE role = 'admin'").all() as any[];
+      for (const admin of admins) {
+        await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+          admin.id, 'system', 'Sengketa Baru',
+          `Pembatalan pesanan #${orderId} ditolak oleh ${rejectorLabel}. Perlu keputusan Admin.`
+        );
+      }
+
+      io.to('admin-room').emit('admin-refresh');
+      res.json({ success: true, message: 'Pembatalan ditolak. Masalah akan dieskalasi ke Admin.' });
+    } catch (error) {
+      console.error('Reject Cancel Error:', error);
+      res.status(500).json({ success: false });
+    }
+  });
+
+  // API: Admin Approve Cancellation (for escalated disputes)
+  app.post('/api/admin/sessions/:id/approve-cancel', requireAuth, async (req: any, res: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Admin only' });
     const { id } = req.params;
     try {
       const order = await db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as any;
       if (!order) return res.status(404).json({ success: false });
 
       await db.transaction(async () => {
-        await db.prepare("UPDATE sessions SET status = 'cancelled' WHERE id = ?").run(id);
+        await db.prepare("UPDATE sessions SET status = 'cancelled', cancel_escalated = 0 WHERE id = ?").run(id);
 
-        // Refund logic
-        if (order.cancelled_by === 'jokies') {
-          await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(order.price, order.jokies_id);
-        } else {
-          await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(order.total_price, order.jokies_id);
+        // Refund logic: jokies cancel = partial, kijo/admin cancel = full
+        if (order.payment_method !== 'Simulasi') {
+          if (order.cancelled_by === 'jokies') {
+            await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(order.price, order.jokies_id);
+          } else {
+            await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(order.total_price, order.jokies_id);
+          }
         }
 
         // Notify both
@@ -1581,39 +1757,39 @@ async function startServer() {
     }
   });
 
-  // API: Kijo Marks Order as Finished - Now requires 2 photos and Admin verification
-  app.post('/api/kijo/finish-order', async (req, res) => {
-    const { orderId, kijoId, proofBefore, proofAfter } = req.body;
+  // API: Kijo Marks Order as Finished - requires proofs already uploaded + 15 min since started_at
+  app.post('/api/kijo/finish-order', requireAuth, async (req: any, res: any) => {
+    const kijoId = req.user.userId;
+    const { orderId } = req.body;
     try {
-      const order = await db.prepare('SELECT *, datetime(created_at) as created_at_dt FROM sessions WHERE id = ? AND user_id = ?').get(orderId, kijoId) as any;
+      const order = await db.prepare('SELECT * FROM sessions WHERE id = ? AND user_id = ?').get(orderId, kijoId) as any;
       if (!order) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
+      if (order.status !== 'ongoing') return res.status(400).json({ success: false, message: 'Pesanan harus berstatus sedang berjalan.' });
 
-      // Cooldown check
-      const createdAt = new Date(order.created_at_dt + 'Z');
-      const now = new Date();
-      const diffMinutes = (now.getTime() - createdAt.getTime()) / (1000 * 60);
-      if (diffMinutes < 15) {
-        return res.status(403).json({ success: false, message: 'Pesanan minimal harus berjalan selama 15 menit sebelum diselesaikan.' });
+      // Check 15 min elapsed since started_at
+      if (order.started_at) {
+        const startedAt = new Date(order.started_at).getTime();
+        const diffMinutes = (Date.now() - startedAt) / (1000 * 60);
+        if (diffMinutes < 15) {
+          return res.status(403).json({ success: false, message: 'Pesanan minimal harus berjalan selama 15 menit sebelum diselesaikan.' });
+        }
       }
 
-      if (!proofBefore || !proofAfter) return res.status(400).json({ success: false, message: 'Wajib menyertakan foto bukti pengerjaan (Sebelum & Sesudah)' });
+      // Check both proofs are uploaded
+      if (!order.screenshot_start || !order.screenshot_end) {
+        return res.status(400).json({ success: false, message: 'Wajib mengunggah bukti pengerjaan Sebelum & Sesudah sebelum menyelesaikan pesanan.' });
+      }
 
-      // Upload proof photos to GCS (passthrough if GCS not configured or already a URL)
-      const [urlBefore, urlAfter] = await Promise.all([
-        uploadBase64ToGCS(GCS_BUCKET_BUKTI, proofBefore, 'screenshots', `session-${orderId}-before`),
-        uploadBase64ToGCS(GCS_BUCKET_BUKTI, proofAfter, 'screenshots', `session-${orderId}-after`),
-      ]);
-
-      await db.prepare("UPDATE sessions SET kijo_finished = 1, screenshot_start = ?, screenshot_end = ?, status = 'pending_completion' WHERE id = ?").run(urlBefore, urlAfter, orderId);
+      await db.prepare("UPDATE sessions SET kijo_finished = 1, status = 'pending_completion' WHERE id = ?").run(orderId);
 
       await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
         order.jokies_id,
         'order_update',
-        'Pesanan Selesai (Menunggu Verifikasi)',
-        `Partner telah menyelesaikan pesanan #${orderId}. Menunggu verifikasi Admin sebelum dana cair.`
+        'Pesanan Selesai (Menunggu Konfirmasi)',
+        `Partner telah menyelesaikan pesanan #${orderId}. Konfirmasi untuk menyelesaikan pesanan dan mencairkan dana.`
       );
 
-      res.json({ success: true, message: 'Pesanan telah dikirim ke Admin untuk verifikasi. Dana akan cair dalam maksimal 3 hari.' });
+      res.json({ success: true, message: 'Pesanan telah ditandai selesai. Menunggu konfirmasi pelanggan.' });
     } catch (error) {
       console.error('[finish-order]', error);
       res.status(500).json({ success: false });
@@ -1628,7 +1804,7 @@ async function startServer() {
       if (!order) return res.status(404).json({ success: false });
 
       await db.transaction(async () => {
-        await db.prepare("UPDATE sessions SET status = 'completed', completed_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+        await db.prepare("UPDATE sessions SET status = 'completed', completed_at = NOW() WHERE id = ?").run(id);
 
         // Transfer funds to Kijo balance_active
         await db.prepare('UPDATE users SET balance_active = balance_active + ? WHERE id = ?').run(order.price, order.user_id);
@@ -1655,8 +1831,9 @@ async function startServer() {
   });
 
   // API: Jokies Confirms Order as Finished
-  app.post('/api/jokies/confirm-finish', async (req, res) => {
-    const { orderId, jokiesId } = req.body;
+  app.post('/api/jokies/confirm-finish', requireAuth, async (req: any, res: any) => {
+    const jokiesId = req.user.userId;
+    const { orderId } = req.body;
     try {
       const order = await db.prepare('SELECT * FROM sessions WHERE id = ? AND jokies_id = ?').get(orderId, jokiesId) as any;
       if (!order) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
@@ -1666,7 +1843,7 @@ async function startServer() {
       if (!order.kijo_finished) return res.status(400).json({ success: false, message: 'Partner belum menandai pesanan ini selesai' });
 
       await db.transaction(async () => {
-        await db.prepare("UPDATE sessions SET jokies_finished = 1, status = 'completed', completed_at = ? WHERE id = ?").run(new Date().toISOString(), orderId);
+        await db.prepare("UPDATE sessions SET jokies_finished = 1, status = 'completed', completed_at = NOW() WHERE id = ?").run(orderId);
         
         // Transfer funds to Kijo balance_active
         await db.prepare('UPDATE users SET balance_active = balance_active + ? WHERE id = ?').run(order.price, order.user_id);
@@ -2064,10 +2241,14 @@ async function startServer() {
     }
   });
 
-  app.post('/api/orders/start', async (req, res) => {
+  app.post('/api/orders/start', requireAuth, async (req: any, res: any) => {
     const { orderId } = req.body;
+    const authUserId = req.user.userId;
     try {
-      const session = await db.prepare('SELECT user_id, game_title, kijo_nickname FROM sessions WHERE id = ?').get(orderId) as any;
+      const session = await db.prepare('SELECT user_id, jokies_id, game_title, kijo_nickname FROM sessions WHERE id = ?').get(orderId) as any;
+      if (!session || (session.user_id !== authUserId && session.jokies_id !== authUserId && req.user.role !== 'admin')) {
+        return res.status(403).json({ success: false, message: 'Anda bukan peserta pesanan ini' });
+      }
       if (session && (session.kijo_nickname === '-' || !session.kijo_nickname)) {
         const boostingAcc = await db.prepare(`
           SELECT nickname, game_id, id 
@@ -2081,7 +2262,7 @@ async function startServer() {
           await db.prepare("UPDATE sessions SET kijo_nickname = ?, kijo_game_id = ?, kijo_game_account_id = ? WHERE id = ?").run(boostingAcc.nickname, boostingAcc.game_id, boostingAcc.id, orderId);
         }
       }
-      await db.prepare("UPDATE sessions SET status = 'ongoing' WHERE id = ? AND status = 'upcoming'").run(orderId);
+      await db.prepare("UPDATE sessions SET status = 'ongoing', started_at = NOW() WHERE id = ? AND status = 'upcoming'").run(orderId);
       
       // Notify Jokies
       const updatedSession = await db.prepare('SELECT jokies_id, title FROM sessions WHERE id = ?').get(orderId) as any;
@@ -2172,25 +2353,59 @@ async function startServer() {
   });
 
   // API: Get Sessions
-  app.get('/api/kijo/sessions/:userId', async (req, res) => {
-    const { userId } = req.params;
+  app.get('/api/kijo/sessions/:userId', requireAuth, async (req: any, res: any) => {
+    const userId = req.user.userId;
 
-    // Auto-start sessions check
+    // Auto-start: only for THIS Kijo's upcoming sessions that are past scheduled_at
     try {
       const nowIso = new Date().toISOString();
-      const sessionsToStart = (await db.prepare("SELECT id, user_id, jokies_id FROM sessions WHERE status = 'upcoming' AND scheduled_at <= ?").all(nowIso)) as any[];
+      const sessionsToStart = (await db.prepare("SELECT id, jokies_id FROM sessions WHERE user_id = ? AND status = 'upcoming' AND scheduled_at <= ?").all(userId, nowIso)) as any[];
       
       for (const session of sessionsToStart) {
-        await db.prepare("UPDATE sessions SET status = 'ongoing' WHERE id = ?").run(session.id);
+        await db.prepare("UPDATE sessions SET status = 'ongoing', started_at = NOW() WHERE id = ?").run(session.id);
         await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-          session.user_id,
-          'system',
-          'Sesi Dimulai Otomatis',
+          userId, 'system', 'Sesi Dimulai Otomatis',
           `Sesi #${session.id} telah dimulai secara otomatis karena sudah melewati waktu mulai.`
         );
+        if (session.jokies_id) {
+          await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+            session.jokies_id, 'order_update', 'Sesi Dimulai!',
+            `Sesi #${session.id} telah dimulai secara otomatis.`
+          );
+        }
       }
     } catch (e) {
       console.error('Auto-start Session Error:', e);
+    }
+
+    // Auto-cancel: upcoming sessions past scheduled_at + duration that were never started
+    try {
+      const expiredSessions = (await db.prepare(`
+        SELECT id, jokies_id, total_price, duration, scheduled_at
+        FROM sessions WHERE user_id = ? AND status = 'upcoming'
+      `).all(userId)) as any[];
+      const now = new Date();
+      for (const s of expiredSessions) {
+        const end = new Date(new Date(s.scheduled_at).getTime() + (s.duration || 1) * 60 * 60 * 1000);
+        if (now > end) {
+          await db.transaction(async () => {
+            await db.prepare("UPDATE sessions SET status = 'cancelled', cancelled_at = NOW(), cancelled_by = 'system', cancellation_reason = 'Otomatis dibatalkan: melewati waktu booking + durasi tanpa dimulai' WHERE id = ?").run(s.id);
+            if (s.jokies_id && s.total_price) {
+              await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(s.total_price, s.jokies_id);
+              await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                s.jokies_id, 'order_update', 'Pesanan Dibatalkan Otomatis',
+                `Pesanan #${s.id} dibatalkan otomatis karena melewati waktu booking. Dana Rp ${(s.total_price || 0).toLocaleString()} dikembalikan ke wallet Anda.`
+              );
+            }
+            await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+              userId, 'system', 'Pesanan Expired',
+              `Pesanan #${s.id} dibatalkan otomatis karena melewati waktu booking + durasi tanpa dimulai.`
+            );
+          })();
+        }
+      }
+    } catch (e) {
+      console.error('Auto-cancel expired sessions error:', e);
     }
 
     // Notification check for sessions starting in 10 mins
@@ -2202,13 +2417,10 @@ async function startServer() {
       const upcomingSoon = (await db.prepare("SELECT id, title, scheduled_at FROM sessions WHERE user_id = ? AND status = 'upcoming' AND scheduled_at > ? AND scheduled_at <= ?").all(userId, nowIso, tenMinsLater)) as any[];
       
       for (const session of upcomingSoon) {
-        // Check if notification already exists to avoid spam
         const exists = await db.prepare("SELECT id FROM notifications WHERE user_id = ? AND type = 'order_reminder' AND message LIKE ?").get(userId, `%#${session.id}%`);
         if (!exists) {
           await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-            userId,
-            'order_reminder',
-            'Sesi Akan Dimulai!',
+            userId, 'order_reminder', 'Sesi Akan Dimulai!',
             `Pesanan #${session.id} (${session.title}) akan dimulai dalam kurang dari 10 menit. Bersiaplah!`
           );
         }
@@ -2226,8 +2438,8 @@ async function startServer() {
     
     const grouped = {
       upcoming: sessions.filter((s: any) => s.status === 'upcoming'),
-      ongoing: sessions.filter((s: any) => s.status === 'ongoing'),
-      history: sessions.filter((s: any) => s.status === 'completed')
+      ongoing: sessions.filter((s: any) => s.status === 'ongoing' || s.status === 'pending_completion' || s.status === 'pending_cancellation'),
+      history: sessions.filter((s: any) => s.status === 'completed' || s.status === 'cancelled')
     };
 
     res.json(grouped);
@@ -3191,8 +3403,13 @@ async function startServer() {
   app.get('/api/admin/sessions', async (req, res) => {
     try {
       const upcoming = await db.prepare("SELECT * FROM sessions WHERE status = 'upcoming' ORDER BY scheduled_at ASC").all();
-      const ongoing = await db.prepare("SELECT * FROM sessions WHERE status = 'ongoing' ORDER BY scheduled_at ASC").all();
-      const disputes = await db.prepare("SELECT * FROM sessions WHERE status = 'cancelled' AND cancellation_reason IS NOT NULL ORDER BY cancelled_at DESC").all();
+      const ongoing = await db.prepare("SELECT * FROM sessions WHERE status IN ('ongoing', 'pending_completion', 'pending_cancellation') AND (cancel_escalated = 0 OR cancel_escalated IS NULL) ORDER BY scheduled_at ASC").all();
+      const disputes = await db.prepare(`
+        SELECT * FROM sessions WHERE
+          (status = 'cancelled' AND cancellation_reason IS NOT NULL)
+          OR (status = 'pending_cancellation' AND cancel_escalated = 1)
+        ORDER BY cancelled_at DESC
+      `).all();
       const history = await db.prepare("SELECT * FROM sessions WHERE status = 'completed' ORDER BY completed_at DESC LIMIT 50").all();
 
       res.json({ upcoming, ongoing, disputes, history });
@@ -3209,7 +3426,7 @@ async function startServer() {
       if (!session) return res.status(404).json({ error: 'Session not found' });
 
       await db.transaction(async () => {
-        await db.prepare("UPDATE sessions SET status = 'completed', completed_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+        await db.prepare("UPDATE sessions SET status = 'completed', completed_at = NOW() WHERE id = ?").run(id);
         
         const payoutAmount = (session.total_price || (session.price + (session.admin_fee || 0))) - (session.admin_fee || 0);
         await db.prepare('UPDATE users SET balance_active = balance_active + ? WHERE id = ?').run(payoutAmount, session.user_id);
@@ -3281,7 +3498,7 @@ async function startServer() {
         }
       }
 
-      await db.prepare("UPDATE sessions SET status = 'ongoing' WHERE id = ?").run(id);
+      await db.prepare("UPDATE sessions SET status = 'ongoing', started_at = NOW() WHERE id = ?").run(id);
 
       await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
         session.user_id, 'order_update', 'Sesi Dimulai Admin', `Admin telah memulai sesi pesanan #${id} secara manual.`
@@ -3335,13 +3552,15 @@ async function startServer() {
       const session = await db.prepare("SELECT * FROM sessions WHERE id = ? AND status = 'pending_cancellation'").get(id) as any;
       if (!session) return res.status(404).json({ error: 'Tidak ada pengajuan pembatalan untuk sesi ini' });
 
-      await db.prepare("UPDATE sessions SET status = 'ongoing', cancelled_by = NULL WHERE id = ?").run(id);
+      // Restore to previous status: upcoming if never started, otherwise ongoing
+      const restoreStatus = session.started_at ? 'ongoing' : 'upcoming';
+      await db.prepare("UPDATE sessions SET status = ?, cancelled_by = NULL, cancel_escalated = 0 WHERE id = ?").run(restoreStatus, id);
 
       await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-        session.jokies_id, 'system', 'Pembatalan Ditolak', `Admin menolak pengajuan pembatalan pesanan #${id}. Sesi dilanjutkan.`
+        session.jokies_id, 'system', 'Pembatalan Ditolak Admin', `Admin menolak pengajuan pembatalan pesanan #${id}. Sesi dilanjutkan.`
       );
       await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-        session.user_id, 'system', 'Pembatalan Ditolak', `Admin menolak pengajuan pembatalan pesanan #${id}. Lanjutkan sesi.`
+        session.user_id, 'system', 'Pembatalan Ditolak Admin', `Admin menolak pengajuan pembatalan pesanan #${id}. Lanjutkan sesi.`
       );
 
       io.to('admin-room').emit('admin-refresh');
@@ -3755,6 +3974,120 @@ async function startServer() {
         withdrawals
       });
     } catch (error) {
+      res.status(500).json({ success: false });
+    }
+  });
+
+  // ===== SYSTEM CLEARANCE =====
+  app.post('/api/admin/clearance', async (req, res) => {
+    try {
+      const clearanceTx = db.transaction(() => {
+        // Reset all non-admin user balances and status fields
+        db.prepare(`
+          UPDATE users
+          SET balance_active = 0, balance_held = 0, wallet_jokies = 0,
+              jokies_lock_until = NULL, last_refund_at = NULL, break_until = NULL,
+              is_suspended = 0
+          WHERE role != 'admin'
+        `).run();
+
+        // Clear all operational data
+        db.prepare('DELETE FROM sessions').run();
+        db.prepare('DELETE FROM transactions').run();
+        db.prepare('DELETE FROM withdrawals').run();
+        db.prepare('DELETE FROM ratings').run();
+        db.prepare(`DELETE FROM traits WHERE user_id IN (SELECT id FROM users WHERE role != 'admin')`).run();
+        db.prepare('DELETE FROM holidays').run();
+        db.prepare(`DELETE FROM notifications WHERE user_id IN (SELECT id FROM users WHERE role != 'admin')`).run();
+        db.prepare('DELETE FROM chat_sessions').run();
+        db.prepare('DELETE FROM kijo_applications').run();
+        db.prepare('DELETE FROM otps').run();
+        db.prepare('DELETE FROM audit_logs').run();
+      });
+
+      clearanceTx();
+
+      const adminId = (req as any).user?.userId;
+      if (adminId) {
+        logAdminAction(adminId, 'system_clearance', 'system', 0, 'Full system clearance executed: all user data reset, all operational records deleted');
+      }
+
+      res.json({ success: true, message: 'System clearance completed successfully.' });
+    } catch (error) {
+      console.error('[Clearance] Error:', error);
+      res.status(500).json({ success: false, message: 'Clearance failed.' });
+    }
+  });
+
+  // ===== ACTIVE SESSION CHECK (for floating indicator) =====
+  app.get('/api/orders/active-session', requireAuth, async (req: any, res: any) => {
+    const userId = req.user.userId;
+    try {
+      const session = await db.prepare(`
+        SELECT s.id, s.title, s.status, s.game_title, s.scheduled_at, s.user_id, s.jokies_id,
+               CASE WHEN s.user_id = ? THEN 'kijo' ELSE 'jokies' END as my_role
+        FROM sessions s
+        WHERE (s.user_id = ? OR s.jokies_id = ?)
+          AND s.status IN ('ongoing', 'pending_completion')
+        ORDER BY s.scheduled_at DESC
+        LIMIT 1
+      `).get(userId, userId, userId) as any;
+
+      if (!session) return res.json({ hasActive: false });
+
+      // Check for unread messages
+      const unread = await db.prepare(`
+        SELECT COUNT(*) as count FROM order_chats
+        WHERE session_id = ? AND sender_id != ?
+          AND created_at > COALESCE(
+            (SELECT MAX(created_at) FROM order_chats WHERE session_id = ? AND sender_id = ?),
+            '1970-01-01'
+          )
+      `).get(session.id, userId, session.id, userId) as any;
+
+      res.json({
+        hasActive: true,
+        session: { ...session, unread_count: unread?.count || 0 }
+      });
+    } catch (error) {
+      console.error('[active-session]', error);
+      res.status(500).json({ hasActive: false });
+    }
+  });
+
+  // ===== PROOF PHOTO UPDATE (Kijo uploads/changes proof photos for ongoing order) =====
+  app.post('/api/kijo/update-proof', requireAuth, async (req: any, res: any) => {
+    const kijoId = req.user.userId;
+    const { orderId, proofBefore, proofAfter } = req.body;
+    try {
+      const order = await db.prepare('SELECT id, status FROM sessions WHERE id = ? AND user_id = ?').get(orderId, kijoId) as any;
+      if (!order) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
+      if (!['ongoing', 'pending_completion'].includes(order.status)) {
+        return res.status(400).json({ success: false, message: 'Bukti hanya bisa diupload saat pesanan sedang berjalan' });
+      }
+
+      const updates: string[] = [];
+      const params: any[] = [];
+
+      if (proofBefore) {
+        const url = await uploadBase64ToGCS(GCS_BUCKET_BUKTI, proofBefore, 'screenshots', `session-${orderId}-before`);
+        updates.push('screenshot_start = ?');
+        params.push(url);
+      }
+      if (proofAfter) {
+        const url = await uploadBase64ToGCS(GCS_BUCKET_BUKTI, proofAfter, 'screenshots', `session-${orderId}-after`);
+        updates.push('screenshot_end = ?');
+        params.push(url);
+      }
+
+      if (updates.length > 0) {
+        params.push(orderId);
+        await db.prepare(`UPDATE sessions SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+      }
+
+      res.json({ success: true, message: 'Bukti pengerjaan berhasil diupdate' });
+    } catch (error) {
+      console.error('[update-proof]', error);
       res.status(500).json({ success: false });
     }
   });

@@ -1209,21 +1209,29 @@ function OrderMonitorCard({ session, onForceComplete, onForceStart, onForceCance
 }
 
 function DisputeCard({ session, onApproveCancel, onRejectCancel }: { session: any, onApproveCancel?: any, onRejectCancel?: any, key?: any }) {
+  const isEscalated = session.status === 'pending_cancellation' && session.cancel_escalated;
+  const isCancelled = session.status === 'cancelled';
+
   return (
-    <div className="bg-bg-sidebar border border-red-500/20 rounded-2xl p-8 shadow-sm relative overflow-hidden">
+    <div className={`bg-bg-sidebar border rounded-2xl p-8 shadow-sm relative overflow-hidden ${isEscalated ? 'border-orange-primary/30' : 'border-red-500/10'}`}>
       <div className="absolute top-0 right-0 p-6 opacity-5">
-        <AlertTriangle size={80} className="text-red-500" />
+        <AlertTriangle size={80} className={isEscalated ? 'text-orange-primary' : 'text-red-500'} />
       </div>
 
       <div className="flex flex-col lg:flex-row gap-10">
         <div className="flex-1 space-y-6">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-red-500/10 flex items-center justify-center text-red-500">
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isEscalated ? 'bg-orange-primary/10 text-orange-primary' : 'bg-red-500/10 text-red-500'}`}>
               <AlertTriangle size={20} />
             </div>
             <div>
-              <h4 className="text-lg font-bold uppercase tracking-tight">Pengajuan Pembatalan #{session.id}</h4>
-              <p className="text-xs text-text-muted font-bold uppercase tracking-widest">Dibatalkan pada: {session.cancelled_at ? new Date(session.cancelled_at).toLocaleString('id-ID') : '-'}</p>
+              <div className="flex items-center gap-2 mb-0.5">
+                <h4 className="text-lg font-bold uppercase tracking-tight">#{session.id} — {isEscalated ? 'Sengketa Aktif' : 'Dibatalkan'}</h4>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border uppercase tracking-widest ${isEscalated ? 'bg-orange-primary/10 text-orange-primary border-orange-primary/20' : 'bg-red-500/10 text-red-400 border-red-500/20'}`}>
+                  {session.cancelled_by === 'jokies' ? 'Jokies' : session.cancelled_by === 'kijo' ? 'Kijo' : 'System'} diajukan
+                </span>
+              </div>
+              <p className="text-xs text-text-muted font-bold uppercase tracking-widest">Waktu: {session.cancelled_at ? new Date(session.cancelled_at).toLocaleString('id-ID') : '-'}</p>
               <p className="text-xs text-text-muted font-bold uppercase tracking-widest mt-0.5">{session.game_title} · {session.kijo_nickname || 'KIJO'} → {session.jokies_nickname || 'JOKIES'} · Rp {session.total_price?.toLocaleString()}</p>
             </div>
           </div>
@@ -1232,22 +1240,31 @@ function DisputeCard({ session, onApproveCancel, onRejectCancel }: { session: an
             <p className="text-xs font-bold text-text-muted uppercase tracking-widest mb-2">Alasan Pembatalan:</p>
             <p className="text-sm font-medium italic text-text-main leading-relaxed">"{session.cancellation_reason || 'Tidak ada alasan.'}"</p>
           </div>
+
+          {isCancelled && (
+            <div className="text-xs text-text-muted bg-bg-main/30 rounded-xl p-4 border border-border-main">
+              Pesanan ini sudah dibatalkan secara otomatis melalui persetujuan kedua belah pihak. Tidak diperlukan tindakan Admin.
+            </div>
+          )}
         </div>
 
-        <div className="w-full lg:w-72 space-y-4">
-          <button
-            onClick={() => onApproveCancel?.(session.id)}
-            className="w-full py-4 rounded-2xl bg-green-500 text-black font-bold text-xs uppercase tracking-widest shadow-lg shadow-green-500/20 hover:scale-[1.02] transition-all"
-          >
-            Approve Cancel + Refund
-          </button>
-          <button
-            onClick={() => onRejectCancel?.(session.id)}
-            className="w-full py-4 rounded-2xl bg-bg-main border border-border-main text-text-main font-bold text-xs uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all"
-          >
-            Reject &amp; Continue Session
-          </button>
-        </div>
+        {isEscalated && (
+          <div className="w-full lg:w-72 space-y-4">
+            <p className="text-xs text-text-muted italic">Pihak lain menolak pembatalan. Admin perlu memutuskan.</p>
+            <button
+              onClick={() => onApproveCancel?.(session.id)}
+              className="w-full py-4 rounded-2xl bg-green-500 text-black font-bold text-xs uppercase tracking-widest shadow-lg shadow-green-500/20 hover:scale-[1.02] transition-all"
+            >
+              Setujui Batalkan + Refund
+            </button>
+            <button
+              onClick={() => onRejectCancel?.(session.id)}
+              className="w-full py-4 rounded-2xl bg-bg-main border border-border-main text-text-main font-bold text-xs uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all"
+            >
+              Tolak & Lanjutkan Sesi
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1260,6 +1277,26 @@ function SecurityView({ data, sessionsData }: { data: any, sessionsData: any }) 
   const [reviewingApp, setReviewingApp] = useState<any>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showClearanceConfirm, setShowClearanceConfirm] = useState(false);
+  const [isClearanceRunning, setIsClearanceRunning] = useState(false);
+
+  const handleSystemClearance = async () => {
+    setIsClearanceRunning(true);
+    try {
+      const res = await fetchWithAuth('/api/admin/clearance', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setShowClearanceConfirm(false);
+        showAlert('System clearance completed. All account data has been reset.', 'success');
+      } else {
+        showAlert(data.message || 'Clearance failed.', 'error');
+      }
+    } catch {
+      showAlert('Clearance request failed.', 'error');
+    } finally {
+      setIsClearanceRunning(false);
+    }
+  };
 
   const handleVerifyKijo = async (applicationId: number, status: 'approved' | 'rejected') => {
     setIsProcessing(true);
@@ -1543,6 +1580,44 @@ function SecurityView({ data, sessionsData }: { data: any, sessionsData: any }) 
           />
         </div>
       )}
+
+      {/* Danger Zone */}
+      <div className="border border-red-500/30 rounded-2xl p-6 bg-red-500/5">
+        <h3 className="text-sm font-bold uppercase tracking-widest text-red-500 mb-1">Danger Zone</h3>
+        <p className="text-xs text-text-muted mb-4">
+          System clearance will zero out all user balances, remove all sessions, transactions, withdrawals, ratings, notifications, chat history, and OTPs.
+          Admin account and all user accounts are preserved.
+        </p>
+        {!showClearanceConfirm ? (
+          <button
+            onClick={() => setShowClearanceConfirm(true)}
+            className="px-5 py-2.5 rounded-xl text-xs font-semibold uppercase tracking-wide bg-red-500/10 text-red-500 border border-red-500/30 hover:bg-red-500 hover:text-white transition-all"
+          >
+            Initiate System Clearance
+          </button>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <p className="text-xs font-semibold text-red-400">Are you sure? This action cannot be undone.</p>
+            <div className="flex gap-3">
+              <button
+                onClick={handleSystemClearance}
+                disabled={isClearanceRunning}
+                className="px-5 py-2.5 rounded-xl text-xs font-semibold uppercase tracking-wide bg-red-500 text-white hover:bg-red-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isClearanceRunning && <Loader2 size={13} className="animate-spin" />}
+                {isClearanceRunning ? 'Clearing...' : 'Yes, Clear Everything'}
+              </button>
+              <button
+                onClick={() => setShowClearanceConfirm(false)}
+                disabled={isClearanceRunning}
+                className="px-5 py-2.5 rounded-xl text-xs font-semibold uppercase tracking-wide bg-bg-sidebar border border-border-main text-text-muted hover:text-text-main transition-all disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
