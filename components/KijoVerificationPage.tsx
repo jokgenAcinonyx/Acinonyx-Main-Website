@@ -1,18 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  ShieldCheck, 
-  Upload, 
-  Image as ImageIcon, 
-  X, 
-  ChevronRight, 
-  ChevronLeft,
-  CheckCircle2,
-  AlertTriangle,
-  Info,
-  Globe,
-  Star
-} from 'lucide-react';
+
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
 import { useAlert } from './AlertContext';
 
@@ -118,19 +106,16 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <button 
+        <button 
         onClick={onBack}
         className="flex items-center gap-2 text-text-muted hover:text-orange-primary transition-colors mb-8 group"
       >
-        <X size={20} className="group-hover:rotate-90 transition-transform" />
         <span className="text-xs font-semibold uppercase tracking-wide">Batal</span>
       </button>
 
       <div className="mb-10">
         <div className="flex items-center gap-4 mb-4">
-          <div className="w-12 h-12 bg-orange-primary/10 rounded-2xl flex items-center justify-center text-orange-primary border border-orange-primary/20">
-            <ShieldCheck size={24} />
-          </div>
+
           <div>
             <h1 className="text-3xl font-bold text-text-main tracking-tighter uppercase">Verifikasi <span className="text-orange-primary">Kijo.</span></h1>
             <p className="text-text-muted text-sm font-medium">Lengkapi data diri untuk mulai menjoki di Acinonyx.</p>
@@ -186,7 +171,7 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
                       <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
                         desiredGame === game.name ? 'bg-orange-primary border-orange-primary text-black' : 'border-border-main'
                       }`}>
-                        {desiredGame === game.name && <CheckCircle2 size={14} />}
+                        {desiredGame === game.name && '✓'}
                       </div>
                     </button>
                   ))}
@@ -204,7 +189,6 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
               className="w-full bg-orange-primary text-black font-bold py-5 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-orange-primary/20 hover:scale-[1.02] transition-all uppercase tracking-widest text-xs"
             >
               Lanjutkan
-              <ChevronRight size={16} />
             </button>
           </motion.div>
         )}
@@ -230,7 +214,7 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
                         onClick={() => removePhoto('id', index)}
                         className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
                       >
-                        <X size={12} />
+                        ×
                       </button>
                     </div>
                   ))}
@@ -239,7 +223,6 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
                       onClick={() => handlePhotoUpload('id')}
                       className="aspect-video rounded-xl border-2 border-dashed border-border-main flex flex-col items-center justify-center gap-2 text-text-muted hover:border-orange-primary hover:text-orange-primary transition-all bg-bg-main/50"
                     >
-                      <Upload size={20} />
                       <span className="text-[11px] font-semibold uppercase tracking-wide">Unggah Foto</span>
                     </button>
                   )}
@@ -249,11 +232,10 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
               <div className="space-y-2">
                 <label className="text-xs font-bold text-text-muted uppercase tracking-widest ml-1">Sosial Media Aktif</label>
                 <div className="relative">
-                  <Globe className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted" size={16} />
                   <input 
                     type="text" 
                     placeholder="Instagram / Facebook / Twitter link..."
-                    className="w-full bg-bg-main border border-border-main rounded-xl py-4 pl-12 pr-4 text-sm text-text-main focus:outline-none focus:border-orange-primary transition-all"
+                    className="w-full bg-bg-main border border-border-main rounded-xl py-4 px-4 text-sm text-text-main focus:outline-none focus:border-orange-primary transition-all"
                     value={socialMedia}
                     onChange={(e) => setSocialMedia(e.target.value)}
                   />
@@ -273,7 +255,6 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
               className="w-full bg-orange-primary text-black font-bold py-5 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-orange-primary/20 hover:scale-[1.02] transition-all disabled:opacity-50 disabled:hover:scale-100 uppercase tracking-widest text-xs"
             >
               Lanjutkan
-              <ChevronRight size={16} />
             </button>
           </motion.div>
         )}
@@ -305,7 +286,7 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
                     <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
                       experienceType === 'experienced' ? 'bg-orange-primary border-orange-primary text-black' : 'border-border-main'
                     }`}>
-                      {experienceType === 'experienced' && <CheckCircle2 size={14} />}
+                      {experienceType === 'experienced' && '✓'}
                     </div>
                   </button>
 
@@ -324,7 +305,7 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
                     <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
                       experienceType === 'newbie' ? 'bg-orange-primary border-orange-primary text-black' : 'border-border-main'
                     }`}>
-                      {experienceType === 'newbie' && <CheckCircle2 size={14} />}
+                      {experienceType === 'newbie' && '✓'}
                     </div>
                   </button>
                 </div>
@@ -347,7 +328,7 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
                           onClick={() => removePhoto('proof', index)}
                           className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
                         >
-                          <X size={12} />
+                          ×
                         </button>
                       </div>
                     ))}
@@ -356,7 +337,6 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
                         onClick={() => handlePhotoUpload('proof')}
                         className="aspect-video rounded-xl border-2 border-dashed border-border-main flex flex-col items-center justify-center gap-2 text-text-muted hover:border-orange-primary hover:text-orange-primary transition-all bg-bg-main/50"
                       >
-                        <Upload size={20} />
                         <span className="text-[11px] font-semibold uppercase tracking-wide">Unggah Bukti</span>
                       </button>
                     )}
@@ -372,7 +352,6 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
                 >
                   <div className="bg-orange-primary/5 border border-orange-primary/20 rounded-2xl p-6 space-y-4">
                     <div className="flex items-center gap-3 text-orange-primary">
-                      <AlertTriangle size={20} />
                       <h4 className="text-xs font-semibold uppercase tracking-wide">Peringatan & Aturan Kijo Baru</h4>
                     </div>
                     <ul className="space-y-3">
@@ -405,8 +384,7 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
                 onClick={() => setStep(4)}
                 className="flex-[2] bg-orange-primary text-black font-bold py-5 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-orange-primary/20 hover:scale-[1.02] transition-all disabled:opacity-50 disabled:hover:scale-100 uppercase tracking-widest text-xs"
               >
-                Lanjutkan
-                <ChevronRight size={16} />
+              Lanjutkan
               </button>
             </div>
           </motion.div>
@@ -422,9 +400,6 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
           >
             <div className="bg-bg-sidebar border border-border-main rounded-2xl p-8 space-y-8">
               <div className="text-center space-y-4">
-                <div className="w-20 h-20 bg-green-500/10 rounded-full flex items-center justify-center text-green-500 mx-auto border border-green-500/20">
-                  <Info size={32} />
-                </div>
                 <div>
                   <h3 className="text-xl font-bold text-text-main uppercase tracking-tight">Konfirmasi Data Diri</h3>
                   <p className="text-text-muted text-xs font-medium">Pastikan semua data yang Anda masukkan sudah benar.</p>
@@ -459,7 +434,6 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
               </div>
 
               <div className="p-4 bg-orange-primary/5 border border-orange-primary/20 rounded-xl flex gap-3">
-                <Info size={16} className="text-orange-primary shrink-0" />
                 <p className="text-xs text-text-muted leading-relaxed">
                   Dengan menekan tombol kirim, Anda setuju bahwa data yang diberikan adalah benar dan bersedia mengikuti segala aturan yang berlaku di Acinonyx.
                 </p>
@@ -482,8 +456,7 @@ export default function KijoVerificationPage({ user, onBack, onSuccess }: KijoVe
                   <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin" />
                 ) : (
                   <>
-                    <CheckCircle2 size={16} />
-                    KIRIM DATA DIRI
+                  KIRIM DATA DIRI
                   </>
                 )}
               </button>

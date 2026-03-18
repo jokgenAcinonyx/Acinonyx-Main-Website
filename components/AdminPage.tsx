@@ -2,59 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { io as socketIO } from 'socket.io-client';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  LayoutDashboard, 
-  Users, 
-  PackageSearch, 
-  ShieldAlert, 
-  TrendingUp, 
-  DollarSign, 
-  UserCheck, 
-  UserX, 
-  AlertTriangle, 
-  AlertCircle,
-  CheckCircle2, 
-  XCircle, 
-  History, 
-  Eye, 
-  MessageSquare, 
-  Send,
-  Clock,
-  Key,
-  ShieldCheck,
-  ChevronRight,
-  Search,
-  Filter,
-  RefreshCw,
-  MoreVertical,
-  Settings2,
-  LogOut,
-  Bell,
   Moon,
-  Sun,
-  Save,
-  Edit2,
-  Menu,
-  X,
-  Gamepad2,
-  Plus,
-  Trash2,
-  Zap,
-  ArrowUpRight,
-  Calendar,
-  Megaphone,
-  ScrollText,
-  Wallet,
-  Banknote,
-  BarChart3,
-  ExternalLink,
-  Ban,
-  Unlock,
-  UserCog,
-  Phone,
-  Mail,
-  Lock,
-  EyeOff,
-  Loader2
+  Sun
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -214,12 +163,12 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
   };
 
   const handleForceCancel = async (sessionId: number) => {
-    const refund = confirm('Batalkan pesanan ini?\n\nKlik OK untuk BATALKAN + REFUND ke Jokies.\nKlik Cancel untuk BATALKAN tanpa refund.');
+    if (!confirm('Batalkan pesanan ini?\n\nRefund penuh akan dikembalikan ke pelanggan (Jokies).')) return;
     try {
       const res = await fetchWithAuth(`/api/admin/sessions/${sessionId}/force-cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refund })
+        body: JSON.stringify({})
       });
       if (res.ok) fetchData();
       else showAlert('Gagal membatalkan sesi', 'error');
@@ -280,17 +229,8 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
       <aside className={`fixed left-0 top-0 bottom-0 w-72 bg-bg-sidebar border-r border-border-main z-[70] flex flex-col transition-transform duration-300 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} xl:translate-x-0`}>
         <div className="p-8 border-b border-border-main shrink-0">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-orange-primary rounded-xl flex items-center justify-center shadow-lg shadow-orange-primary/20">
-                <ShieldCheck className="text-black" size={24} />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold leading-none">MINOX.</h1>
-                <p className="text-xs font-bold text-orange-primary uppercase tracking-widest mt-1">Minox Panel</p>
-              </div>
-            </div>
-            <button onClick={() => setIsSidebarOpen(false)} className="xl:hidden text-text-muted hover:text-text-main p-2">
-              <X size={24} />
+            <button onClick={() => setIsSidebarOpen(false)} className="xl:hidden text-text-muted hover:text-text-main p-2 ml-auto">
+              ×
             </button>
           </div>
         </div>
@@ -300,67 +240,67 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
             <SidebarLink 
               active={view === 'dashboard'} 
               onClick={() => { setView('dashboard'); setIsSidebarOpen(false); }} 
-              icon={<LayoutDashboard size={20} />} 
+              icon={null} 
               label="Dashboard" 
             />
             <SidebarLink 
               active={view === 'users'} 
               onClick={() => { setView('users'); setIsSidebarOpen(false); }} 
-              icon={<Users size={20} />} 
+              icon={null} 
               label="Users" 
             />
             <SidebarLink 
               active={view === 'orders'} 
               onClick={() => { setView('orders'); setIsSidebarOpen(false); }} 
-              icon={<PackageSearch size={20} />} 
+              icon={null} 
               label="Orders" 
             />
             <SidebarLink 
               active={view === 'financials'} 
               onClick={() => { setView('financials'); setIsSidebarOpen(false); }} 
-              icon={<Wallet size={20} />} 
+              icon={null} 
               label="Financials" 
             />
             <SidebarLink 
               active={view === 'security'} 
               onClick={() => { setView('security'); setIsSidebarOpen(false); }} 
-              icon={<ShieldAlert size={20} />} 
+              icon={null} 
               label="Security" 
             />
             <SidebarLink 
               active={view === 'notifications'} 
               onClick={() => { setView('notifications'); setIsSidebarOpen(false); }} 
-              icon={<Bell size={20} />} 
+              icon={null} 
               label="Alerts" 
             />
             <SidebarLink 
               active={view === 'announcements'} 
               onClick={() => { setView('announcements'); setIsSidebarOpen(false); }} 
-              icon={<Megaphone size={20} />} 
+              icon={null} 
               label="Banners" 
             />
             <SidebarLink 
               active={view === 'games'} 
               onClick={() => { setView('games'); setIsSidebarOpen(false); }} 
-              icon={<Gamepad2 size={20} />} 
+              icon={null} 
               label="Games" 
             />
             <SidebarLink 
               active={view === 'maintenance'} 
               onClick={() => { setView('maintenance'); setIsSidebarOpen(false); }} 
-              icon={<Clock size={20} />} 
+              icon={null} 
               label="Maintenance" 
             />
             <SidebarLink
               active={view === 'audit'}
               onClick={() => { setView('audit'); setIsSidebarOpen(false); }}
-              icon={<ScrollText size={20} />}
+              icon={null}
               label="Audit Logs"
             />
             <SidebarLink
               active={view === 'profile'}
               onClick={() => { setView('profile'); setIsSidebarOpen(false); }}
-              icon={<UserCog size={20} />}
+              icon={null}
               label="Profil Minox"
             />
           </nav>
@@ -383,7 +323,7 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
             onClick={onLogout}
             className="w-full py-4 rounded-2xl bg-red-500/10 text-red-500 border border-red-500/20 font-bold text-xs uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2"
           >
-            <LogOut size={16} /> Logout System
+            Logout System
           </button>
         </div>
       </aside>
@@ -397,23 +337,22 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
               onClick={() => setIsSidebarOpen(true)}
               className="xl:hidden p-2 rounded-lg bg-bg-sidebar border border-border-main text-text-muted hover:text-orange-primary transition-all shadow-sm"
             >
-              <Menu size={20} />
+              ☰
             </button>
             
-            {/* Logo for mobile - icon only */}
-            <div className="lg:hidden flex items-center justify-center w-10 h-10 bg-orange-primary rounded-xl shadow-lg shadow-orange-primary/20">
-              <ShieldCheck className="text-black" size={24} />
-            </div>
-
             <div className="hidden sm:block">
               <h2 className="text-sm md:text-2xl font-bold uppercase truncate max-w-[150px] md:max-w-none">
                 {view === 'dashboard' && 'Dashboard'}
                 {view === 'users' && 'Users'}
                 {view === 'orders' && 'Orders'}
+                {view === 'financials' && 'Financials'}
                 {view === 'security' && 'Security'}
                 {view === 'notifications' && 'Alerts'}
+                {view === 'announcements' && 'Banners'}
                 {view === 'games' && 'Games'}
                 {view === 'maintenance' && 'Maintenance'}
+                {view === 'audit' && 'Audit Logs'}
+                {view === 'profile' && 'Profil Minox'}
               </h2>
               <p className="text-text-muted text-[11px] md:text-xs font-bold uppercase tracking-widest mt-0.5 md:mt-1 hidden md:flex md:items-center md:gap-2">
                 <span className={`inline-block w-1.5 h-1.5 rounded-full ${isLive ? 'bg-green-500 animate-pulse' : 'bg-text-muted'}`} />
@@ -429,7 +368,6 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
               className="flex items-center gap-2 p-2 md:p-3 rounded-lg md:rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500 hover:text-white transition-all shadow-sm"
               title="Logout"
             >
-              <LogOut size={18} />
               <span className="hidden sm:inline text-xs font-semibold uppercase tracking-wide">Logout</span>
             </button>
             
@@ -445,7 +383,7 @@ export default function AdminPage({ user, onLogout, theme, toggleTheme, globalGa
               disabled={refreshing}
               className={`p-2 md:p-3 rounded-lg md:rounded-xl bg-bg-sidebar border border-border-main text-text-muted hover:text-orange-primary transition-all shadow-sm ${refreshing ? 'animate-spin' : ''}`}
             >
-              <RefreshCw size={20} />
+              ↻
             </button>
             <div className="h-8 md:h-10 w-[1px] bg-border-main mx-1 md:mx-2" />
             <div className="flex items-center gap-2 bg-green-500/10 border border-green-500/20 px-2 md:px-4 py-1.5 md:py-2 rounded-lg md:rounded-xl">
@@ -522,7 +460,7 @@ function AdminNotificationsView({ notifications, onRefresh }: { notifications: a
               n.type === 'system' ? 'bg-orange-primary/10 text-orange-primary' :
               'bg-bg-main text-text-muted'
             }`}>
-              {n.type === 'order_new' ? <PackageSearch size={24} /> : <Bell size={24} />}
+              
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex justify-between items-start mb-1 gap-4">
@@ -546,7 +484,6 @@ function AdminNotificationsView({ notifications, onRefresh }: { notifications: a
 
         {notifications.length === 0 && (
           <div className="py-32 text-center bg-bg-sidebar border border-dashed border-border-main rounded-2xl">
-            <Bell className="text-text-muted mx-auto mb-4 opacity-10" size={64} />
             <p className="text-text-muted text-sm font-semibold uppercase tracking-wide">Belum ada notifikasi sistem</p>
           </div>
         )}
@@ -595,7 +532,12 @@ function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () 
   const [newFee, setNewFee] = useState(stats?.adminFee || 10);
   const [saving, setSaving] = useState(false);
 
-  if (!stats) return null;
+  if (!stats) return (
+    <div className="py-32 text-center">
+      <div className="w-10 h-10 border-4 border-orange-primary border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+      <p className="text-text-muted text-xs font-bold uppercase tracking-widest">Memuat data dashboard...</p>
+    </div>
+  );
 
   const handleSaveFee = async () => {
     setSaving(true);
@@ -621,7 +563,6 @@ function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () 
       {/* Game Management Quick Access - Replaces Welcome Box */}
       <div className="bg-gradient-to-br from-bg-sidebar to-bg-main border border-border-main rounded-2xl md:rounded-2xl p-6 md:p-10 shadow-sm relative overflow-hidden">
         <div className="absolute top-0 right-0 p-10 opacity-[0.03] pointer-events-none">
-          <Gamepad2 size={120} />
         </div>
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div>
@@ -650,7 +591,7 @@ function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-8">
         <StatCard 
-          icon={<DollarSign className="text-blue-400" />} 
+          icon={null} 
           label="Total Omzet" 
           value={`Rp ${stats.totalOmzet?.toLocaleString() || '0'}`} 
           trend="Pendapatan Kotor Sistem"
@@ -658,7 +599,7 @@ function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () 
         />
         <div className="relative group">
           <StatCard 
-            icon={<TrendingUp className="text-orange-primary" />} 
+            icon={null} 
             label="Profit Minox"
             value={`Rp ${stats.profitAdmin?.toLocaleString() || '0'}`} 
             trend={`Biaya Layanan: ${stats.adminFee || '10'}%`}
@@ -668,18 +609,18 @@ function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () 
             onClick={() => { setIsEditingFee(true); setNewFee(stats.adminFee || 10); }}
             className="absolute top-4 right-4 p-2 rounded-lg bg-bg-main border border-border-main text-text-muted hover:text-orange-primary opacity-0 group-hover:opacity-100 transition-all"
           >
-            <Edit2 size={14} />
+            ✎
           </button>
         </div>
         <StatCard 
-          icon={<Users className="text-green-400" />} 
+          icon={null} 
           label="Statistik User" 
-          value={`${stats.stats.kijo} KIJO / ${stats.stats.jokies} JOKIES`} 
+          value={`${stats.stats?.kijo ?? 0} KIJO / ${stats.stats?.jokies ?? 0} JOKIES`} 
           trend="Akun Aktif Terverifikasi"
           color="green"
         />
         <StatCard 
-          icon={<AlertTriangle className="text-red-400" />} 
+          icon={null} 
           label="Pesanan Dibatalkan" 
           value={stats.cancellationStats} 
           trend="Total Kasus Sengketa"
@@ -737,7 +678,7 @@ function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () 
                   disabled={saving}
                   className="flex-1 py-4 rounded-2xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest hover:scale-[1.02] transition-all shadow-lg shadow-orange-primary/20 flex items-center justify-center gap-2"
                 >
-                  {saving ? <RefreshCw size={16} className="animate-spin" /> : <Save size={16} />}
+                  {saving ? '...' : ''}
                   Simpan
                 </button>
               </div>
@@ -760,7 +701,7 @@ function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () 
           </div>
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={stats.dailyTrends}>
+              <AreaChart data={stats.dailyTrends || []}>
                 <defs>
                   <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#FF9F1C" stopOpacity={0.3}/>
@@ -792,7 +733,7 @@ function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () 
           </div>
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={stats.hourlyTrends}>
+              <BarChart data={stats.hourlyTrends || []}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#2D2D2D" vertical={false} />
                 <XAxis dataKey="hour" stroke="#666" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(val) => `${val}:00`} />
                 <YAxis stroke="#666" fontSize={10} tickLine={false} axisLine={false} />
@@ -820,7 +761,7 @@ function DashboardView({ stats, onRefresh, games }: { stats: any, onRefresh: () 
         </div>
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={stats.monthlyTrends}>
+            <LineChart data={stats.monthlyTrends || []}>
               <CartesianGrid strokeDasharray="3 3" stroke="#2D2D2D" vertical={false} />
               <XAxis dataKey="month" stroke="#666" fontSize={10} tickLine={false} axisLine={false} />
               <YAxis stroke="#666" fontSize={10} tickLine={false} axisLine={false} />
@@ -847,7 +788,9 @@ function StatCard({ icon, label, value, trend, color }: any) {
   return (
     <div className="bg-bg-sidebar border border-border-main rounded-2xl md:rounded-2xl p-5 md:p-8 shadow-sm hover:border-orange-primary/30 transition-all group">
       <div className={`w-10 h-10 md:w-14 md:h-14 rounded-xl md:rounded-2xl flex items-center justify-center border mb-4 md:mb-6 transition-transform group-hover:scale-110 duration-500 ${colorClasses[color]}`}>
-        {React.cloneElement(icon as React.ReactElement<{ size?: number }>, { size: 18 })}
+        {icon ? React.cloneElement(icon as React.ReactElement<{ size?: number }>, { size: 18 }) : (
+          <span className="text-lg font-bold">{color === 'orange' ? '₹' : color === 'blue' ? '◎' : color === 'green' ? '◉' : '⊘'}</span>
+        )}
       </div>
       <p className="text-[11px] md:text-xs font-bold text-text-muted uppercase tracking-widest mb-1 md:mb-2">{label}</p>
       <h4 className="text-lg md:text-2xl font-bold mb-2 md:mb-4">{value}</h4>
@@ -935,7 +878,7 @@ function UsersView({ data, onSuspend, onVerify, onDetail }: { data: any, onSuspe
                         className="p-2 rounded-lg bg-bg-main border border-border-main text-text-muted hover:text-orange-primary transition-all"
                         title="Detail User"
                       >
-                        <Eye size={14} />
+                        Detail
                       </button>
                       <button 
                         onClick={() => onSuspend(u.id, u.is_suspended)}
@@ -979,7 +922,7 @@ function UsersView({ data, onSuspend, onVerify, onDetail }: { data: any, onSuspe
                         className="p-2 rounded-lg bg-bg-main border border-border-main text-text-muted hover:text-orange-primary transition-all"
                         title="Detail User"
                       >
-                        <Eye size={14} />
+                        Detail
                       </button>
                       <button 
                         onClick={() => onSuspend(u.id, u.is_suspended)}
@@ -1028,7 +971,6 @@ function UsersView({ data, onSuspend, onVerify, onDetail }: { data: any, onSuspe
         </div>
         {(activeTab === 'verification' && safeKijos.filter((u: any) => u.is_verified === 0).length === 0) && (
           <div className="py-12 md:py-20 text-center">
-            <CheckCircle2 className="text-text-muted mx-auto mb-4 opacity-20" size={48} />
             <p className="text-text-muted text-xs md:text-xs font-bold uppercase tracking-widest">Semua KIJO telah terverifikasi</p>
           </div>
         )}
@@ -1048,7 +990,7 @@ function OrdersView({ data, onForceComplete, onForceStart, onForceCancel, onAppr
     // Flatten ranks to get a simple list for priority
     const flatRanks: string[] = [];
     game.ranks.forEach((r: any) => {
-      r.tiers.forEach((t: string) => {
+      (r.tiers || []).forEach((t: string) => {
         flatRanks.push(`${r.title} - ${t}`);
       });
     });
@@ -1102,16 +1044,16 @@ function OrdersView({ data, onForceComplete, onForceStart, onForceCancel, onAppr
       </div>
 
       <div className="grid grid-cols-1 gap-6">
-        {activeTab === 'ongoing' && sortOrders(data.ongoing).map((s: any) => (
+        {activeTab === 'ongoing' && sortOrders(data.ongoing || []).map((s: any) => (
           <OrderMonitorCard key={s.id} session={s} onForceComplete={onForceComplete} onForceCancel={onForceCancel} />
         ))}
-        {activeTab === 'disputes' && data.disputes.map((s: any) => (
+        {activeTab === 'disputes' && (data.disputes || []).map((s: any) => (
           <DisputeCard key={s.id} session={s} onApproveCancel={onApproveCancel} onRejectCancel={onRejectCancel} />
         ))}
-        {activeTab === 'upcoming' && sortOrders(data.upcoming).map((s: any) => (
+        {activeTab === 'upcoming' && sortOrders(data.upcoming || []).map((s: any) => (
           <OrderMonitorCard key={s.id} session={s} onForceStart={onForceStart} onForceCancel={onForceCancel} />
         ))}
-        {activeTab === 'history' && sortOrders(data.history).map((s: any) => (
+        {activeTab === 'history' && sortOrders(data.history || []).map((s: any) => (
           <OrderMonitorCard key={s.id} session={s} isHistory />
         ))}
       </div>
@@ -1211,18 +1153,31 @@ function OrderMonitorCard({ session, onForceComplete, onForceStart, onForceCance
 function DisputeCard({ session, onApproveCancel, onRejectCancel }: { session: any, onApproveCancel?: any, onRejectCancel?: any, key?: any }) {
   const isEscalated = session.status === 'pending_cancellation' && session.cancel_escalated;
   const isCancelled = session.status === 'cancelled';
+  const [showChat, setShowChat] = useState(false);
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
+  const [loadingChat, setLoadingChat] = useState(false);
+
+  const loadChat = async () => {
+    if (showChat) { setShowChat(false); return; }
+    setLoadingChat(true);
+    try {
+      const res = await fetchWithAuth(`/api/admin/sessions/${session.id}/chat`);
+      const data = await res.json();
+      setChatMessages(Array.isArray(data) ? data : []);
+    } catch { setChatMessages([]); }
+    setLoadingChat(false);
+    setShowChat(true);
+  };
 
   return (
     <div className={`bg-bg-sidebar border rounded-2xl p-8 shadow-sm relative overflow-hidden ${isEscalated ? 'border-orange-primary/30' : 'border-red-500/10'}`}>
       <div className="absolute top-0 right-0 p-6 opacity-5">
-        <AlertTriangle size={80} className={isEscalated ? 'text-orange-primary' : 'text-red-500'} />
       </div>
 
       <div className="flex flex-col lg:flex-row gap-10">
         <div className="flex-1 space-y-6">
           <div className="flex items-center gap-3">
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isEscalated ? 'bg-orange-primary/10 text-orange-primary' : 'bg-red-500/10 text-red-500'}`}>
-              <AlertTriangle size={20} />
             </div>
             <div>
               <div className="flex items-center gap-2 mb-0.5">
@@ -1232,7 +1187,7 @@ function DisputeCard({ session, onApproveCancel, onRejectCancel }: { session: an
                 </span>
               </div>
               <p className="text-xs text-text-muted font-bold uppercase tracking-widest">Waktu: {session.cancelled_at ? new Date(session.cancelled_at).toLocaleString('id-ID') : '-'}</p>
-              <p className="text-xs text-text-muted font-bold uppercase tracking-widest mt-0.5">{session.game_title} · {session.kijo_nickname || 'KIJO'} → {session.jokies_nickname || 'JOKIES'} · Rp {session.total_price?.toLocaleString()}</p>
+              <p className="text-xs text-text-muted font-bold uppercase tracking-widest mt-0.5">{session.game_title} · {session.kijo_name || session.kijo_nickname || 'KIJO'} → {session.jokies_name || session.jokies_nickname || 'JOKIES'} · Rp {session.total_price?.toLocaleString()}</p>
             </div>
           </div>
 
@@ -1240,6 +1195,51 @@ function DisputeCard({ session, onApproveCancel, onRejectCancel }: { session: an
             <p className="text-xs font-bold text-text-muted uppercase tracking-widest mb-2">Alasan Pembatalan:</p>
             <p className="text-sm font-medium italic text-text-main leading-relaxed">"{session.cancellation_reason || 'Tidak ada alasan.'}"</p>
           </div>
+
+          {/* Proof Photos */}
+          {(session.screenshot_start || session.screenshot_end) && (
+            <div className="space-y-2">
+              <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Bukti Foto Pengerjaan:</p>
+              <div className="flex gap-4 flex-wrap">
+                {session.screenshot_start && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-text-faint uppercase tracking-widest">Sebelum</p>
+                    <a href={session.screenshot_start} target="_blank" rel="noopener noreferrer">
+                      <img src={session.screenshot_start} alt="Before" className="w-40 h-40 object-cover rounded-xl border border-border-main hover:opacity-80 transition-opacity" />
+                    </a>
+                  </div>
+                )}
+                {session.screenshot_end && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-text-faint uppercase tracking-widest">Sesudah</p>
+                    <a href={session.screenshot_end} target="_blank" rel="noopener noreferrer">
+                      <img src={session.screenshot_end} alt="After" className="w-40 h-40 object-cover rounded-xl border border-border-main hover:opacity-80 transition-opacity" />
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Chat History Toggle */}
+          <button onClick={loadChat} className="text-xs font-bold text-orange-primary uppercase tracking-widest hover:underline">
+            {loadingChat ? 'Memuat...' : showChat ? '▼ Sembunyikan Chat' : '▶ Lihat Riwayat Chat'}
+          </button>
+          {showChat && (
+            <div className="bg-bg-main/60 rounded-xl border border-border-main p-4 max-h-80 overflow-y-auto space-y-2">
+              {chatMessages.length === 0 ? (
+                <p className="text-xs text-text-faint text-center italic">Tidak ada pesan chat.</p>
+              ) : chatMessages.map((m: any) => (
+                <div key={m.id} className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-orange-primary uppercase">{m.sender_name || m.sender_username || `User #${m.sender_id}`}</span>
+                    <span className="text-[9px] text-text-faint">{new Date(m.created_at).toLocaleString('id-ID')}</span>
+                  </div>
+                  <p className="text-xs text-text-main">{m.message}</p>
+                </div>
+              ))}
+            </div>
+          )}
 
           {isCancelled && (
             <div className="text-xs text-text-muted bg-bg-main/30 rounded-xl p-4 border border-border-main">
@@ -1251,11 +1251,16 @@ function DisputeCard({ session, onApproveCancel, onRejectCancel }: { session: an
         {isEscalated && (
           <div className="w-full lg:w-72 space-y-4">
             <p className="text-xs text-text-muted italic">Pihak lain menolak pembatalan. Admin perlu memutuskan.</p>
+            <p className="text-xs text-text-muted">
+              {session.cancelled_by === 'jokies'
+                ? `Refund parsial: Rp ${(session.price || 0).toLocaleString()} (biaya admin tidak dikembalikan)`
+                : `Refund penuh: Rp ${(session.total_price || 0).toLocaleString()}`}
+            </p>
             <button
               onClick={() => onApproveCancel?.(session.id)}
               className="w-full py-4 rounded-2xl bg-green-500 text-black font-bold text-xs uppercase tracking-widest shadow-lg shadow-green-500/20 hover:scale-[1.02] transition-all"
             >
-              Setujui Batalkan + Refund
+              {session.cancelled_by === 'jokies' ? 'Setujui Batalkan + Refund Parsial' : 'Setujui Batalkan + Refund Penuh'}
             </button>
             <button
               onClick={() => onRejectCancel?.(session.id)}
@@ -1368,7 +1373,6 @@ function SecurityView({ data, sessionsData }: { data: any, sessionsData: any }) 
                       <h4 className="text-xl font-bold uppercase tracking-tight">{app.full_name}</h4>
                       <p className="text-xs text-text-muted font-bold uppercase tracking-widest">@{app.username} • {app.experience_type === 'experienced' ? 'Berpengalaman' : 'Baru'}</p>
                       <div className="mt-2 inline-flex items-center gap-2 bg-orange-primary/10 border border-orange-primary/20 px-3 py-1 rounded-lg">
-                        <Gamepad2 size={12} className="text-orange-primary" />
                         <span className="text-xs font-bold text-orange-primary uppercase tracking-widest">{app.desired_game}</span>
                       </div>
                     </div>
@@ -1378,7 +1382,7 @@ function SecurityView({ data, sessionsData }: { data: any, sessionsData: any }) 
                     <div className="space-y-4">
                       <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Foto Identitas Game</p>
                       <div className="flex flex-wrap gap-2">
-                        {app.identification_photos.map((url: string, i: number) => (
+                        {(Array.isArray(app.identification_photos) ? app.identification_photos : []).map((url: string, i: number) => (
                           <img 
                             key={i} 
                             src={url} 
@@ -1393,7 +1397,7 @@ function SecurityView({ data, sessionsData }: { data: any, sessionsData: any }) 
                       <div className="space-y-4">
                         <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Bukti Pengalaman</p>
                         <div className="flex flex-wrap gap-2">
-                          {app.proof_photos.map((url: string, i: number) => (
+                          {(Array.isArray(app.proof_photos) ? app.proof_photos : []).map((url: string, i: number) => (
                             <img 
                               key={i} 
                               src={url} 
@@ -1434,7 +1438,6 @@ function SecurityView({ data, sessionsData }: { data: any, sessionsData: any }) 
 
           {(!data.kijoApplications || data.kijoApplications.filter((a: any) => a.status === 'pending').length === 0) && (
             <div className="py-20 text-center bg-bg-sidebar border border-dashed border-border-main rounded-2xl">
-              <ShieldCheck className="text-text-muted mx-auto mb-4 opacity-20" size={48} />
               <p className="text-text-muted text-xs font-semibold uppercase tracking-wide">Tidak ada pengajuan Kijo baru</p>
             </div>
           )}
@@ -1558,7 +1561,7 @@ function SecurityView({ data, sessionsData }: { data: any, sessionsData: any }) 
                 className={`p-5 bg-bg-main border rounded-2xl transition-all cursor-pointer group ${selectedChat?.id === session.id ? 'border-orange-primary' : 'border-border-main hover:border-orange-primary/30'}`}
               >
                 <div className="flex justify-between items-start mb-2">
-                  <p className="text-xs font-bold uppercase tracking-tight">{session.customer_name}</p>
+                  <p className="text-xs font-bold uppercase tracking-tight">{session.full_name || session.username || 'User'}</p>
                   <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest ${session.status === 'open' ? 'bg-green-500/10 text-green-500 border border-green-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'}`}>
                     {session.status}
                   </span>
@@ -1604,7 +1607,7 @@ function SecurityView({ data, sessionsData }: { data: any, sessionsData: any }) 
                 disabled={isClearanceRunning}
                 className="px-5 py-2.5 rounded-xl text-xs font-semibold uppercase tracking-wide bg-red-500 text-white hover:bg-red-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
-                {isClearanceRunning && <Loader2 size={13} className="animate-spin" />}
+                {isClearanceRunning && <span className="animate-spin">...</span>}
                 {isClearanceRunning ? 'Clearing...' : 'Yes, Clear Everything'}
               </button>
               <button
@@ -1702,7 +1705,6 @@ function AdminChatWindow({ session, onClose, adminId }: { session: any, onClose:
   if (!session) {
     return (
       <div className="lg:col-span-2 bg-bg-sidebar border border-border-main rounded-2xl md:rounded-2xl p-6 md:p-10 shadow-sm flex flex-col items-center justify-center text-center space-y-4 opacity-30">
-        <MessageSquare size={64} />
         <p className="text-xs font-semibold uppercase tracking-wide">Pilih chat untuk membalas</p>
       </div>
     );
@@ -1713,10 +1715,10 @@ function AdminChatWindow({ session, onClose, adminId }: { session: any, onClose:
       <div className="flex items-center justify-between mb-6 border-b border-border-main pb-4">
         <div className="flex items-center gap-3">
           <button onClick={onClose} className="lg:hidden p-2 -ml-2 text-text-muted hover:text-text-main">
-            <X size={20} />
+            ×
           </button>
           <div>
-            <p className="text-sm font-bold uppercase tracking-tight">{session.customer_name}</p>
+            <p className="text-sm font-bold uppercase tracking-tight">{session.full_name || session.username || 'User'}</p>
             <p className="text-xs text-orange-primary font-bold uppercase tracking-widest">Tiket #{session.id}</p>
           </div>
         </div>
@@ -1765,7 +1767,7 @@ function AdminChatWindow({ session, onClose, adminId }: { session: any, onClose:
             disabled={loading || !newMessage.trim()}
             className="w-12 h-12 md:w-14 md:h-14 bg-orange-primary text-black rounded-xl md:rounded-2xl flex items-center justify-center shadow-lg shadow-orange-primary/20 hover:scale-105 transition-all shrink-0 disabled:opacity-50"
           >
-            {loading ? <RefreshCw size={18} className="animate-spin" /> : <Send size={20} />}
+            {loading ? '...' : '→'}
           </button>
         </form>
       ) : (
@@ -1963,7 +1965,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
             onClick={() => setShowTemplates(!showTemplates)}
             className="px-4 py-2 bg-bg-sidebar border border-border-main rounded-xl text-xs font-semibold uppercase tracking-wide hover:border-orange-primary/30 transition-all flex items-center gap-2"
           >
-            <Zap size={14} className="text-orange-primary" /> Use Template
+            Use Template
           </button>
         </div>
       </div>
@@ -1982,7 +1984,6 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
             >
               <div className="flex items-center justify-between mb-2">
                 <h4 className="font-bold text-text-main uppercase tracking-tight">{template.name}</h4>
-                <ArrowUpRight size={16} className="text-text-muted group-hover:text-orange-primary transition-colors" />
               </div>
               <p className="text-xs text-text-muted font-bold uppercase tracking-widest">
                 {template.input_schema.length} Fields • {template.ranks.length} Ranks
@@ -2013,7 +2014,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
               disabled={isAdding || !newGameName.trim()}
               className="w-full py-4 rounded-2xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest hover:scale-[1.02] transition-all shadow-lg shadow-orange-primary/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:hover:scale-100"
             >
-              {isAdding ? <RefreshCw size={16} className="animate-spin" /> : <Plus size={16} />}
+              {isAdding ? '...' : '+'}
               Tambah Game
             </button>
           </div>
@@ -2032,7 +2033,6 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
               <div key={game.id} className="p-6 flex items-center justify-between hover:bg-bg-main/30 transition-colors group">
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 rounded-xl bg-bg-main border border-border-main flex items-center justify-center text-orange-primary">
-                    <Gamepad2 size={24} />
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
@@ -2078,20 +2078,19 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
                     }}
                     className="flex items-center gap-2 px-4 py-2 bg-orange-primary/10 text-orange-primary text-xs font-semibold uppercase tracking-wide rounded-xl border border-orange-primary/20 hover:bg-orange-primary hover:text-black transition-all"
                   >
-                    <Settings2 size={14} /> Manage Game
+                    Manage Game
                   </button>
                   <button 
                     onClick={() => handleDeleteGame(game.id)}
                     className="p-3 rounded-xl bg-red-500/10 text-red-500 border border-red-500/20 opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500 hover:text-white"
                   >
-                    <Trash2 size={16} />
+                    ×
                   </button>
                 </div>
               </div>
             ))}
             {games.length === 0 && (
               <div className="p-20 text-center">
-                <Gamepad2 className="mx-auto text-text-muted mb-4 opacity-10" size={64} />
                 <p className="text-text-muted text-xs font-semibold uppercase tracking-wide">Belum ada game yang ditambahkan</p>
               </div>
             )}
@@ -2147,7 +2146,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
                       onClick={addInputField}
                       className="flex items-center gap-2 text-orange-primary text-xs font-semibold uppercase tracking-wide hover:underline"
                     >
-                      <Plus size={14} /> Tambah Input
+                      + Tambah Input
                     </button>
                   </div>
                   
@@ -2191,7 +2190,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
                           onClick={() => removeInputField(index)}
                           className="p-2 text-red-500 hover:bg-red-500/10 rounded-lg transition-all"
                         >
-                          <Trash2 size={16} />
+                          ×
                         </button>
                       </div>
                     ))}
@@ -2205,7 +2204,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
                       onClick={() => setEditFormData({...editFormData, ranks: [...(editFormData.ranks || []), { title: '', tiers: [''] }]})}
                       className="flex items-center gap-2 text-orange-primary text-xs font-semibold uppercase tracking-wide hover:underline"
                     >
-                      <Plus size={14} /> Tambah Rank
+                      + Tambah Rank
                     </button>
                   </div>
                   
@@ -2235,7 +2234,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
                             }}
                             className="p-2 text-red-500 hover:bg-red-500/10 rounded-lg transition-all self-end"
                           >
-                            <Trash2 size={16} />
+                            ×
                           </button>
                         </div>
 
@@ -2251,7 +2250,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
                               }}
                               className="text-[11px] font-bold text-orange-primary uppercase tracking-widest hover:underline flex items-center gap-1"
                             >
-                              <Plus size={10} /> Add Rank Tier
+                              + Add Rank Tier
                             </button>
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -2280,7 +2279,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
                                   }}
                                   className="p-1.5 text-text-muted hover:text-red-500 transition-all"
                                 >
-                                  <X size={12} />
+                                  ×
                                 </button>
                               </div>
                             ))}
@@ -2308,7 +2307,7 @@ function GamesManagementView({ games, onRefresh }: { games: any[], onRefresh: ()
                   onClick={handleUpdateGame}
                   className="flex-1 py-4 rounded-2xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest hover:scale-[1.02] transition-all shadow-lg shadow-orange-primary/20 flex items-center justify-center gap-2"
                 >
-                  <Save size={16} /> Simpan Perubahan
+                  Simpan Perubahan
                 </button>
               </div>
             </motion.div>
@@ -2324,7 +2323,12 @@ function FinancialsView({ data, withdrawals, onRefresh, adminId }: { data: any, 
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('');
 
-  if (!data) return null;
+  if (!data) return (
+    <div className="py-32 text-center">
+      <div className="w-10 h-10 border-4 border-orange-primary border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+      <p className="text-text-muted text-xs font-bold uppercase tracking-widest">Memuat data finansial...</p>
+    </div>
+  );
 
   const handleApprove = async (id: number) => {
     if (!confirm('Setujui penarikan dana ini?')) return;
@@ -2361,10 +2365,10 @@ function FinancialsView({ data, withdrawals, onRefresh, adminId }: { data: any, 
   return (
     <div className="space-y-10">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard icon={<DollarSign />} label="Total Revenue" value={`Rp ${data.totalRevenue.toLocaleString()}`} color="blue" trend="Total perputaran uang" />
-        <StatCard icon={<TrendingUp />} label="Total Profit" value={`Rp ${data.totalProfit.toLocaleString()}`} color="orange" trend="Keuntungan bersih admin" />
-        <StatCard icon={<Clock />} label="Pending Withdrawals" value={`Rp ${data.pendingWithdrawals.toLocaleString()}`} color="red" trend="Menunggu persetujuan" />
-        <StatCard icon={<CheckCircle2 />} label="Paid Out" value={`Rp ${data.successWithdrawals.toLocaleString()}`} color="green" trend="Total dana dicairkan" />
+        <StatCard icon={null} label="Total Revenue" value={`Rp ${(data.totalRevenue || 0).toLocaleString()}`} color="blue" trend="Total perputaran uang" />
+        <StatCard icon={null} label="Total Profit" value={`Rp ${(data.totalProfit || 0).toLocaleString()}`} color="orange" trend="Keuntungan bersih admin" />
+        <StatCard icon={null} label="Pending Withdrawals" value={`Rp ${(data.pendingWithdrawals || 0).toLocaleString()}`} color="red" trend="Menunggu persetujuan" />
+        <StatCard icon={null} label="Paid Out" value={`Rp ${(data.successWithdrawals || 0).toLocaleString()}`} color="green" trend="Total dana dicairkan" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -2400,10 +2404,10 @@ function FinancialsView({ data, withdrawals, onRefresh, adminId }: { data: any, 
                         {w.status === 'pending' ? (
                           <div className="flex items-center justify-end gap-2">
                             <button onClick={() => setRejectingId(w.id)} className="p-2 rounded-lg bg-red-500/10 text-red-500 border border-red-500/20 hover:bg-red-500 hover:text-white transition-all">
-                              <XCircle size={16} />
+                              ×
                             </button>
                             <button onClick={() => handleApprove(w.id)} className="p-2 rounded-lg bg-green-500/10 text-green-500 border border-green-500/20 hover:bg-green-500 hover:text-white transition-all">
-                              <CheckCircle2 size={16} />
+                              ✓
                             </button>
                           </div>
                         ) : (
@@ -2430,7 +2434,7 @@ function FinancialsView({ data, withdrawals, onRefresh, adminId }: { data: any, 
         <div className="space-y-6">
           <h3 className="text-xl font-bold uppercase tracking-tight">Recent Transactions</h3>
           <div className="bg-bg-sidebar border border-border-main rounded-2xl p-6 shadow-sm space-y-4 max-h-[600px] overflow-y-auto no-scrollbar">
-            {data.recentTransactions.map((t: any) => (
+            {(data.recentTransactions || []).map((t: any) => (
               <div key={t.id} className="p-4 rounded-2xl bg-bg-main border border-border-main flex items-center justify-between gap-4">
                 <div className="min-w-0">
                   <p className="text-xs font-bold uppercase tracking-tight truncate">{t.description}</p>
@@ -2527,7 +2531,7 @@ function AnnouncementsView({ data, onRefresh, adminId }: { data: any[], onRefres
           <p className="text-text-muted text-xs font-bold uppercase tracking-widest">Kelola pengumuman global yang muncul di dashboard user</p>
         </div>
         <button onClick={() => setIsAdding(true)} className="px-8 py-4 bg-orange-primary text-black rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-orange-primary/20 flex items-center gap-2">
-          <Plus size={18} /> Add New Banner
+          Add New Banner
         </button>
       </div>
 
@@ -2543,10 +2547,10 @@ function AnnouncementsView({ data, onRefresh, adminId }: { data: any[], onRefres
               <span className="text-[11px] font-bold px-2 py-1 bg-bg-main border border-border-main rounded-full uppercase tracking-widest text-text-muted">Target: {a.target}</span>
               <div className="flex gap-2">
                 <button onClick={() => handleToggle(a.id, a.is_active)} className={`p-2 rounded-lg border transition-all ${a.is_active ? 'bg-green-500/10 text-green-500 border-green-500/20' : 'bg-bg-main text-text-muted border-border-main'}`}>
-                  {a.is_active ? <CheckCircle2 size={14} /> : <Ban size={14} />}
+                  {a.is_active ? '✓' : '—'}
                 </button>
                 <button onClick={() => handleDelete(a.id)} className="p-2 rounded-lg bg-red-500/10 text-red-500 border border-red-500/20 hover:bg-red-500 hover:text-white transition-all">
-                  <Trash2 size={14} />
+                  ×
                 </button>
               </div>
             </div>
@@ -2722,7 +2726,6 @@ function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClo
       <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
         <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
         <div className="relative bg-bg-sidebar border border-border-main rounded-2xl p-8 shadow-2xl max-w-sm text-center">
-          <AlertCircle className="text-red-500 mx-auto mb-4" size={48} />
           <h3 className="text-xl font-bold text-text-main mb-2">Gagal Memuat Data</h3>
           <p className="text-text-muted text-sm mb-6">Data user tidak ditemukan atau terjadi kesalahan pada server.</p>
           <button onClick={onClose} className="w-full bg-orange-primary text-black font-bold py-3 rounded-xl">TUTUP</button>
@@ -2748,7 +2751,7 @@ function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClo
             </div>
           </div>
           <button onClick={onClose} className="p-3 rounded-xl bg-bg-main border border-border-main text-text-muted hover:text-orange-primary transition-all">
-            <X size={24} />
+            ×
           </button>
         </div>
 
@@ -2830,7 +2833,7 @@ function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClo
             return (
               <div className="mb-12">
                 <h4 className="text-lg font-bold uppercase tracking-tight mb-6 flex items-center gap-2">
-                  <ExternalLink size={20} className="text-orange-primary" /> Linked Accounts
+                  Linked Accounts
                 </h4>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   {socialLinks.discord && (
@@ -2868,7 +2871,7 @@ function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClo
           <div className="space-y-12">
             <div>
               <h4 className="text-lg font-bold uppercase tracking-tight mb-6 flex items-center gap-2">
-                <PackageSearch size={20} className="text-orange-primary" /> Order History
+                Order History
               </h4>
               <div className="bg-bg-main border border-border-main rounded-2xl overflow-hidden">
                 <table className="w-full text-left border-collapse">
@@ -2894,7 +2897,7 @@ function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClo
                         </td>
                       </tr>
                     ))}
-                    {data.orders.length === 0 && <tr><td colSpan={4} className="px-6 py-10 text-center text-xs font-semibold uppercase tracking-wide text-text-muted opacity-30">No orders yet</td></tr>}
+                    {(data.orders || []).length === 0 && <tr><td colSpan={4} className="px-6 py-10 text-center text-xs font-semibold uppercase tracking-wide text-text-muted opacity-30">No orders yet</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -2903,7 +2906,7 @@ function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClo
             <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
               <div>
                 <h4 className="text-lg font-bold uppercase tracking-tight mb-6 flex items-center gap-2">
-                  <History size={20} className="text-orange-primary" /> Transactions
+                  Transactions
                 </h4>
                 <div className="space-y-3">
                   {(data.transactions || []).map((t: any) => (
@@ -2917,12 +2920,12 @@ function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClo
                       </p>
                     </div>
                   ))}
-                  {data.transactions.length === 0 && <p className="text-center py-10 text-xs font-semibold uppercase tracking-wide text-text-muted opacity-30">No transactions</p>}
+                  {(data.transactions || []).length === 0 && <p className="text-center py-10 text-xs font-semibold uppercase tracking-wide text-text-muted opacity-30">No transactions</p>}
                 </div>
               </div>
               <div>
                 <h4 className="text-lg font-bold uppercase tracking-tight mb-6 flex items-center gap-2">
-                  <DollarSign size={20} className="text-orange-primary" /> Withdrawals
+                  Withdrawals
                 </h4>
                 <div className="space-y-3">
                   {(data.withdrawals || []).map((w: any) => (
@@ -2937,7 +2940,7 @@ function UserDetailModal({ userId, onClose, onRefresh }: { userId: number, onClo
                       </div>
                     </div>
                   ))}
-                  {data.withdrawals.length === 0 && <p className="text-center py-10 text-xs font-semibold uppercase tracking-wide text-text-muted opacity-30">No withdrawals</p>}
+                  {(data.withdrawals || []).length === 0 && <p className="text-center py-10 text-xs font-semibold uppercase tracking-wide text-text-muted opacity-30">No withdrawals</p>}
                 </div>
               </div>
             </div>
@@ -3039,14 +3042,13 @@ function MaintenanceView({ onRefresh }: { onRefresh: () => void }) {
           onClick={() => setShowAddModal(true)}
           className="px-6 py-3 rounded-xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest hover:scale-[1.02] transition-all shadow-lg shadow-orange-primary/20 flex items-center justify-center gap-2"
         >
-          <Plus size={16} /> Tambah Jadwal
+          Tambah Jadwal
         </button>
       </div>
 
       <div className="bg-bg-sidebar border border-border-main rounded-2xl overflow-hidden shadow-sm">
         <div className="p-8 border-b border-border-main bg-bg-main/30 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Calendar className="text-orange-primary" size={20} />
             <span className="text-xs font-semibold uppercase tracking-wide">Daftar Jadwal Maintenance</span>
           </div>
           <span className="px-3 py-1 bg-bg-main border border-border-main rounded-lg text-xs font-bold text-text-muted uppercase tracking-widest">
@@ -3059,7 +3061,6 @@ function MaintenanceView({ onRefresh }: { onRefresh: () => void }) {
             <div key={s.id} className="p-6 md:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6 hover:bg-bg-main/30 transition-colors group">
               <div className="flex items-start gap-4 md:gap-6">
                 <div className="w-12 h-12 md:w-16 md:h-16 rounded-2xl bg-bg-main border border-border-main flex items-center justify-center text-orange-primary shrink-0">
-                  <Clock size={24} />
                 </div>
                 <div>
                   <div className="flex items-center gap-3 mb-2">
@@ -3073,13 +3074,11 @@ function MaintenanceView({ onRefresh }: { onRefresh: () => void }) {
                   </div>
                   <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
                     <div className="flex items-center gap-2">
-                      <Calendar size={12} className="text-text-muted" />
                       <span className="text-xs md:text-xs font-bold text-text-muted uppercase tracking-widest">
                         Mulai: {new Date(s.start_date).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Calendar size={12} className="text-text-muted" />
                       <span className="text-xs md:text-xs font-bold text-text-muted uppercase tracking-widest">
                         Selesai: {new Date(s.end_date).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })}
                       </span>
@@ -3091,13 +3090,12 @@ function MaintenanceView({ onRefresh }: { onRefresh: () => void }) {
                 onClick={() => handleDeleteSchedule(s.id)}
                 className="p-3 md:p-4 rounded-xl bg-red-500/10 text-red-500 border border-red-500/20 opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500 hover:text-white flex items-center justify-center"
               >
-                <Trash2 size={18} />
+                ×
               </button>
             </div>
           ))}
           {schedules.length === 0 && (
             <div className="py-32 text-center">
-              <Clock className="mx-auto text-text-muted mb-4 opacity-10" size={64} />
               <p className="text-text-muted text-sm font-semibold uppercase tracking-wide">Belum ada jadwal maintenance</p>
             </div>
           )}
@@ -3106,7 +3104,6 @@ function MaintenanceView({ onRefresh }: { onRefresh: () => void }) {
 
       <div className="bg-orange-primary/5 border border-orange-primary/20 rounded-2xl p-8 flex items-start gap-6">
         <div className="w-12 h-12 bg-orange-primary/10 rounded-2xl flex items-center justify-center text-orange-primary shrink-0">
-          <AlertTriangle size={24} />
         </div>
         <div>
           <h4 className="text-sm font-bold text-text-main uppercase tracking-tight mb-2">Aturan Maintenance Sistem</h4>
@@ -3191,7 +3188,7 @@ function MaintenanceView({ onRefresh }: { onRefresh: () => void }) {
                   disabled={saving}
                   className="flex-1 py-4 rounded-2xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest hover:scale-[1.02] transition-all shadow-lg shadow-orange-primary/20 flex items-center justify-center gap-2"
                 >
-                  {saving ? <RefreshCw size={16} className="animate-spin" /> : <Save size={16} />}
+                  {saving ? '...' : ''}
                   Simpan Jadwal
                 </button>
               </div>
@@ -3289,7 +3286,7 @@ function MinoxProfileView({ user, onUpdate }: { user: any; onUpdate: (u: any) =>
         <form onSubmit={handleContactSave} className="space-y-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-text-muted border-b border-border-main pb-2">Email & Telepon</p>
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-text-muted flex items-center gap-1.5"><Mail size={12} /> Email</label>
+            <label className="text-xs font-medium text-text-muted flex items-center gap-1.5">Email</label>
             <input
               type="email"
               value={contactForm.email}
@@ -3298,7 +3295,7 @@ function MinoxProfileView({ user, onUpdate }: { user: any; onUpdate: (u: any) =>
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-text-muted flex items-center gap-1.5"><Phone size={12} /> Nomor Telepon</label>
+            <label className="text-xs font-medium text-text-muted flex items-center gap-1.5">Nomor Telepon</label>
             <input
               type="tel"
               value={contactForm.phone}
@@ -3314,7 +3311,7 @@ function MinoxProfileView({ user, onUpdate }: { user: any; onUpdate: (u: any) =>
             disabled={contactLoading}
             className="flex items-center gap-2 bg-orange-primary hover:bg-amber-400 disabled:opacity-60 disabled:cursor-not-allowed text-black font-semibold px-5 py-2.5 rounded-xl text-sm transition-colors"
           >
-            {contactLoading ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            {contactLoading ? '...' : ''}
             Simpan Perubahan
           </button>
         </form>
@@ -3325,7 +3322,7 @@ function MinoxProfileView({ user, onUpdate }: { user: any; onUpdate: (u: any) =>
         <form onSubmit={handlePassSave} className="space-y-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-text-muted border-b border-border-main pb-2">Ubah Password</p>
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-text-muted flex items-center gap-1.5"><Lock size={12} /> Password Saat Ini</label>
+            <label className="text-xs font-medium text-text-muted flex items-center gap-1.5">Password Saat Ini</label>
             <div className="relative">
               <input
                 type={showPass ? 'text' : 'password'}
@@ -3336,7 +3333,7 @@ function MinoxProfileView({ user, onUpdate }: { user: any; onUpdate: (u: any) =>
                 className="w-full bg-bg-card border border-border-main rounded-xl px-4 py-2.5 pr-11 text-sm text-text-main placeholder:text-text-faint focus:outline-none focus:border-orange-primary/50 transition-colors"
               />
               <button type="button" onClick={() => setShowPass(p => !p)} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-faint hover:text-text-muted transition-colors">
-                {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showPass ? '○' : '●'}
               </button>
             </div>
           </div>
@@ -3370,7 +3367,7 @@ function MinoxProfileView({ user, onUpdate }: { user: any; onUpdate: (u: any) =>
             disabled={passLoading}
             className="flex items-center gap-2 bg-orange-primary hover:bg-amber-400 disabled:opacity-60 disabled:cursor-not-allowed text-black font-semibold px-5 py-2.5 rounded-xl text-sm transition-colors"
           >
-            {passLoading ? <Loader2 size={14} className="animate-spin" /> : <Lock size={14} />}
+            {passLoading ? '...' : ''}
             Ubah Password
           </button>
         </form>

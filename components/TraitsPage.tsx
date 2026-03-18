@@ -1,21 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Brain, 
-  Trophy, 
-  Shield, 
-  Smile, 
-  Zap, 
-  Flame, 
-  Lock, 
-  UserCheck, 
-  Moon, 
-  Sun, 
-  Handshake,
-  CheckCircle2,
-  LockKeyhole,
-  Info
-} from 'lucide-react';
 
 import { KIJO_TRAITS, JOKIES_TRAITS, TraitDefinition } from '../constants';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
@@ -89,11 +73,6 @@ export default function TraitsPage({ user, mode }: TraitsPageProps) {
                 isEarned ? 'border-orange-primary/30 shadow-lg shadow-orange-primary/5' : 'border-border-main opacity-40 grayscale'
               }`}
             >
-              <div className={`w-12 h-12 rounded-xl flex items-center justify-center border transition-all duration-500 ${
-                isEarned ? `bg-bg-main border-orange-primary/20 ${trait.color}` : 'bg-bg-main border-border-main text-text-muted'
-              }`}>
-                {React.cloneElement(trait.icon as React.ReactElement<{ size?: number }>, { size: 20 })}
-              </div>
               
               <div className="space-y-1">
                 <h3 className={`text-xs font-bold tracking-tight uppercase ${isEarned ? 'text-text-main' : 'text-text-muted'}`}>
@@ -124,9 +103,6 @@ export default function TraitsPage({ user, mode }: TraitsPageProps) {
         </div>
         
         <div className="bg-orange-primary/5 border border-orange-primary/20 rounded-2xl p-6 flex items-center gap-4 shadow-sm">
-          <div className="w-14 h-14 bg-orange-primary/10 rounded-2xl flex items-center justify-center border border-orange-primary/20">
-            <Trophy className="text-orange-primary" size={28} />
-          </div>
           <div>
             <div className="text-xs font-bold text-orange-primary uppercase tracking-widest">Total Badge</div>
             <div className="text-3xl font-bold text-text-main">{userTraits.length} / {JOKIES_TRAITS.length + (isKijoUser ? KIJO_TRAITS.length : 0)}</div>
@@ -172,28 +148,22 @@ export default function TraitsPage({ user, mode }: TraitsPageProps) {
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
               className="relative w-full max-w-sm bg-bg-sidebar border border-border-main rounded-2xl p-8 shadow-2xl overflow-hidden"
             >
-              {/* Background Icon Watermark */}
-              <div className={`absolute -right-10 -bottom-10 opacity-[0.05] ${selectedTrait.color}`}>
-                {React.cloneElement(selectedTrait.icon as React.ReactElement<{ size?: number }>, { size: 200 })}
-              </div>
-
               <div className="relative z-10 space-y-6">
                 <div className="flex justify-between items-start">
-                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center border bg-bg-main border-orange-primary/20 ${selectedTrait.color}`}>
-                    {React.cloneElement(selectedTrait.icon as React.ReactElement<{ size?: number }>, { size: 32 })}
+                  <div>
+                    <h3 className="text-2xl font-bold text-text-main tracking-tight mb-2 uppercase">
+                      {selectedTrait.name}
+                    </h3>
                   </div>
                   <button 
                     onClick={() => setSelectedTrait(null)}
                     className="p-2 text-text-muted hover:text-text-main transition-colors"
                   >
-                    <CheckCircle2 size={24} />
+                    ×
                   </button>
                 </div>
 
                 <div>
-                  <h3 className="text-2xl font-bold text-text-main tracking-tight mb-2 uppercase">
-                    {selectedTrait.name}
-                  </h3>
                   <p className="text-text-muted text-sm leading-relaxed font-medium">
                     {selectedTrait.description}
                   </p>
@@ -201,7 +171,7 @@ export default function TraitsPage({ user, mode }: TraitsPageProps) {
 
                 <div className="pt-6 border-t border-border-main">
                   <div className="flex items-center gap-2 mb-2">
-                    <Info size={14} className="text-text-muted" />
+
                     <span className="text-xs font-bold text-text-muted uppercase tracking-widest">Kriteria Perolehan</span>
                   </div>
                   <p className="text-xs text-text-muted italic leading-relaxed">
@@ -224,9 +194,6 @@ export default function TraitsPage({ user, mode }: TraitsPageProps) {
       {/* Footer Info (Only for Kijo) */}
       {isKijoUser && (
         <div className="bg-bg-sidebar border border-border-main rounded-2xl p-10 flex flex-col md:flex-row items-center gap-10 shadow-sm">
-          <div className="w-24 h-24 shrink-0 bg-orange-primary/10 rounded-full flex items-center justify-center border border-orange-primary/20 shadow-inner">
-            <Zap className="text-orange-primary" size={40} />
-          </div>
           <div className="flex-1 text-center md:text-left">
             <h4 className="text-text-main font-bold text-xl mb-2 uppercase tracking-tight">Sistem Kalkulasi Otomatis</h4>
             <p className="text-text-muted text-sm leading-relaxed font-medium">

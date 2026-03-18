@@ -1,16 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Package, Clock, ChevronRight, Gamepad2, Zap, MessageSquare, Calendar,
-  CreditCard,
-  User,
-  Image as ImageIcon,
-  Star,
+import { Star,
   ArrowLeft
 } from 'lucide-react';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
 import { formatDuration, statusColor, statusLabel, toJakartaDT as toJakartaDateTime, toJakartaDate, toJakartaTime } from '@/utils/formatters';
 import { useAlert } from './AlertContext';
 import OrderChat from './OrderChat';
+
+declare global {
+  interface Window {
+    snap?: {
+      pay: (token: string, options: {
+        onSuccess?: (result: any) => void;
+        onPending?: (result: any) => void;
+        onError?: (result: any) => void;
+        onClose?: () => void;
+      }) => void;
+    };
+  }
+}
 
 interface OrdersPageProps {
   user: any;
@@ -30,6 +39,12 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
   const [isRejectingCancel, setIsRejectingCancel] = useState(false);
   const [showRatingModal, setShowRatingModal] = useState(false);
   const [showMobileChat, setShowMobileChat] = useState(false);
+  const [snapReady, setSnapReady] = useState(false);
+  const [resumingPayment, setResumingPayment] = useState<number | null>(null);
+  const [paymentCountdowns, setPaymentCountdowns] = useState<Record<number, number>>({});
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isRevertingCancel, setIsRevertingCancel] = useState(false);
   const [ratingData, setRatingData] = useState({
     stars: 5,
     skillRating: 5,
@@ -56,6 +71,26 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
       if (res.ok) {
         const data = await res.json();
         setOrders(data);
+
+        // Auto-verify any pending_payment orders in case webhook was missed
+        const pendingOrders = data.filter((o: any) => o.status === 'pending_payment');
+        if (pendingOrders.length > 0) {
+          let anyChanged = false;
+          for (const o of pendingOrders) {
+            try {
+              const vRes = await fetchWithAuth(`/api/payment/verify/${o.id}`, { method: 'POST' });
+              if (vRes.ok) {
+                const vData = await vRes.json();
+                if (vData.success && vData.status === 'settlement') anyChanged = true;
+              }
+            } catch {}
+          }
+          // If any order was just settled, re-fetch to show updated list
+          if (anyChanged) {
+            const res2 = await fetchWithAuth(`/api/jokies/orders/${user.id}`);
+            if (res2.ok) setOrders(await res2.json());
+          }
+        }
       }
     } catch (error) {
       console.error('Error fetching orders:', error);
@@ -67,6 +102,102 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
   useEffect(() => {
     fetchOrders();
   }, [user.id]);
+
+  // Load Midtrans Snap.js for resume payment
+  useEffect(() => {
+    const loadSnap = async () => {
+      try {
+        const res = await fetchWithAuth('/api/payment/client-key');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!document.getElementById('midtrans-snap-script')) {
+          const snapUrl = data.isProduction
+            ? 'https://app.midtrans.com/snap/snap.js'
+            : 'https://app.sandbox.midtrans.com/snap/snap.js';
+          const script = document.createElement('script');
+          script.id = 'midtrans-snap-script';
+          script.src = snapUrl;
+          script.setAttribute('data-client-key', data.clientKey);
+          script.onload = () => setSnapReady(true);
+          document.head.appendChild(script);
+        } else {
+          setSnapReady(true);
+        }
+      } catch {}
+    };
+    loadSnap();
+  }, []);
+
+  // Countdown timer for pending_payment orders
+  useEffect(() => {
+    const pendingOrders = orders.filter(o => o.status === 'pending_payment');
+    if (pendingOrders.length === 0) {
+      if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+      return;
+    }
+
+    const updateCountdowns = () => {
+      const now = Date.now();
+      const newCountdowns: Record<number, number> = {};
+      let anyExpired = false;
+      for (const o of pendingOrders) {
+        const createdAt = new Date(o.created_at).getTime();
+        const remaining = Math.max(0, Math.floor((15 * 60 * 1000 - (now - createdAt)) / 1000));
+        newCountdowns[o.id] = remaining;
+        if (remaining === 0) anyExpired = true;
+      }
+      setPaymentCountdowns(newCountdowns);
+      if (anyExpired) fetchOrders(); // refresh to pick up auto-cancelled sessions
+    };
+
+    updateCountdowns();
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    countdownRef.current = setInterval(updateCountdowns, 1000);
+    return () => { if (countdownRef.current) clearInterval(countdownRef.current); };
+  }, [orders]);
+
+  const handleResumePayment = useCallback(async (sessionId: number) => {
+    if (!snapReady || !window.snap) {
+      showAlert('Payment gateway belum siap. Tunggu sebentar...', 'error');
+      return;
+    }
+    setResumingPayment(sessionId);
+    try {
+      const res = await fetchWithAuth(`/api/payment/resume/${sessionId}`);
+      if (!res.ok) {
+        let msg = 'Gagal membuka pembayaran.';
+        try { const err = await res.json(); msg = err.message || msg; } catch {}
+        showAlert(msg, 'error');
+        if (res.status === 410) fetchOrders(); // expired, refresh
+        return;
+      }
+      const data = await res.json();
+      window.snap!.pay(data.snapToken, {
+        onSuccess: async () => {
+          // Verify payment with server to ensure session moves to 'upcoming'
+          try {
+            await fetchWithAuth(`/api/payment/verify/${sessionId}`, { method: 'POST' });
+          } catch {}
+          showAlert('Pembayaran berhasil! Pesanan Anda sedang diproses.', 'success');
+          fetchOrders();
+        },
+        onPending: () => {
+          showAlert('Menunggu pembayaran. Selesaikan pembayaran sesuai instruksi.', 'warning');
+          fetchOrders();
+        },
+        onError: () => {
+          showAlert('Pembayaran gagal. Silakan coba lagi.', 'error');
+        },
+        onClose: () => {
+          // User closed popup — that's fine, they can re-open
+        },
+      });
+    } catch (error) {
+      showAlert('Terjadi kesalahan.', 'error');
+    } finally {
+      setResumingPayment(null);
+    }
+  }, [snapReady, showAlert, fetchOrders]);
 
   const handleCancelOrder = async () => {
     if (!cancelReason) { showAlert('Mohon isi alasan pembatalan', 'warning'); return; }
@@ -154,6 +285,27 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
     finally { setIsRejectingCancel(false); }
   };
 
+  const handleRevertCancel = async () => {
+    if (!selectedOrder) return;
+    setIsRevertingCancel(true);
+    try {
+      const res = await fetchWithAuth('/api/orders/revert-cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: selectedOrder.id })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showAlert(data.message || 'Permintaan pembatalan berhasil dibatalkan.', 'success');
+        setSelectedOrder(null);
+        fetchOrders();
+      } else {
+        showAlert(data.message || 'Gagal membatalkan permintaan pembatalan', 'error');
+      }
+    } catch { showAlert('Terjadi kesalahan', 'error'); }
+    finally { setIsRevertingCancel(false); }
+  };
+
   const handleSubmitRating = async () => {
     try {
       const res = await fetchWithAuth('/api/jokies/ratings', {
@@ -169,7 +321,6 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
       if (res.ok) {
         showAlert('Terima kasih atas ulasan Anda!', 'success');
         setShowRatingModal(false);
-        setSelectedOrder(null);
         fetchOrders();
       }
     } catch (error) {
@@ -177,10 +328,24 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
     }
   };
 
+  const filteredOrders = orders.filter(o => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      (o.title || '').toLowerCase().includes(q) ||
+      (o.kijo_name || '').toLowerCase().includes(q) ||
+      (o.kijo_username || '').toLowerCase().includes(q) ||
+      (o.game_title || '').toLowerCase().includes(q) ||
+      String(o.id).includes(q)
+    );
+  });
+
   const groupedOrders = {
-    upcoming: [...orders.filter(o => o.status === 'upcoming')].sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()),
-    ongoing: [...orders.filter(o => ['ongoing', 'pending_completion', 'pending_cancellation'].includes(o.status))].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime()),
-    history: [...orders.filter(o => o.status === 'completed' || o.status === 'cancelled')].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime())
+    pendingPayment: [...filteredOrders.filter(o => o.status === 'pending_payment')].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
+    upcoming: [...filteredOrders.filter(o => o.status === 'upcoming')].sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()),
+    ongoing: [...filteredOrders.filter(o => ['ongoing', 'pending_completion'].includes(o.status))].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime()),
+    cancellation: [...filteredOrders.filter(o => ['pending_cancellation', 'cancelled'].includes(o.status))].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime()),
+    history: [...filteredOrders.filter(o => o.status === 'completed')].sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime())
   };
 
   const renderDynamicData = (dataString: string) => {
@@ -264,7 +429,7 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
               {/* Detail Pemesanan */}
               <div className="bg-bg-main/50 p-5 md:p-6 rounded-2xl border border-border-main">
                 <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
-                  <Calendar size={14} /> Detail Pemesanan
+                  Detail Pemesanan
                 </h3>
                 <div className="grid grid-cols-2 gap-y-4">
                   <div>
@@ -313,7 +478,7 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
               {/* Rincian Pembayaran */}
               <div className="bg-bg-main/50 p-5 md:p-6 rounded-2xl border border-border-main">
                 <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
-                  <CreditCard size={14} /> Rincian Pembayaran
+                  Rincian Pembayaran
                 </h3>
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm">
@@ -340,7 +505,7 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                 {/* Jokies */}
                 <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
                   <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-3 flex items-center gap-2">
-                    <User size={14} /> Detail Jokies
+                    Detail Jokies
                   </h3>
                   <div className="space-y-2">
                     <p className="text-sm font-bold text-text-main">{user.full_name || user.username}</p>
@@ -350,7 +515,7 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                 {/* Kijo */}
                 <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
                   <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-3 flex items-center gap-2">
-                    <Zap size={14} className="text-orange-primary" /> Detail Kijo
+                    Detail Kijo
                   </h3>
                   <div className="space-y-2">
                     <p className="text-sm font-bold text-text-main">{selectedOrder.kijo_name || selectedOrder.kijo_username || selectedOrder.title}</p>
@@ -366,7 +531,7 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
               {(isActive || selectedOrder.status === 'completed') && (
                 <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
                   <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
-                    <ImageIcon size={14} /> Bukti Pengerjaan
+                    Bukti Pengerjaan
                   </h3>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
@@ -395,29 +560,41 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
 
               {/* Actions */}
               <div className="space-y-4">
-                {/* Pending Completion: Jokies must confirm */}
+                {/* Pending Completion: Kijo requested finish, Jokies must confirm */}
                 {selectedOrder.status === 'pending_completion' && (
                   <div className="bg-green-500/5 p-5 rounded-2xl border border-green-500/20">
-                    <h3 className="text-xs font-bold text-green-500 uppercase tracking-widest mb-3">Konfirmasi Selesai</h3>
+                    <h3 className="text-xs font-bold text-green-500 uppercase tracking-widest mb-3">Partner Minta Konfirmasi Selesai</h3>
                     <p className="text-xs text-text-muted mb-4 leading-relaxed">
-                      Partner telah menandai pesanan selesai. Pastikan pengerjaan sudah sesuai sebelum mengonfirmasi. Dana akan langsung diteruskan ke Partner.
+                      Partner telah mengajukan penyelesaian pesanan. Periksa hasil pengerjaan — jika sudah sesuai, konfirmasi untuk mencairkan dana ke Partner.
                     </p>
                     <button
                       onClick={handleConfirmFinish}
                       disabled={isCompleting}
-                      className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 rounded-xl shadow-lg shadow-green-500/10 transition-all disabled:opacity-50"
+                      className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 rounded-xl shadow-lg shadow-green-500/10 transition-all disabled:opacity-50 text-xs uppercase tracking-widest"
                     >
                       {isCompleting ? 'MEMPROSES...' : 'KONFIRMASI PESANAN SELESAI'}
                     </button>
                   </div>
                 )}
 
-                {/* Ongoing: waiting for Kijo to finish */}
-                {selectedOrder.status === 'ongoing' && !selectedOrder.kijo_finished && (
-                  <div className="bg-bg-main p-5 rounded-2xl border border-border-main text-center">
-                    <Clock className="mx-auto text-orange-primary mb-2" size={28} />
-                    <p className="text-sm font-bold text-text-main mb-1">Partner Sedang Mengerjakan</p>
-                    <p className="text-xs text-text-muted">Pesanan Anda sedang dikerjakan oleh Partner.</p>
+                {/* Ongoing: Jokies can finish directly or wait for Kijo to request */}
+                {selectedOrder.status === 'ongoing' && (
+                  <div className="space-y-3">
+                    <div className="bg-bg-main p-4 rounded-xl border border-border-main text-center">
+                      <p className="text-sm font-bold text-text-main mb-1">Partner Sedang Mengerjakan</p>
+                      <p className="text-xs text-text-muted">Pesanan Anda sedang dikerjakan oleh Partner.</p>
+                    </div>
+                    <div className="bg-green-500/5 p-5 rounded-2xl border border-green-500/20">
+                      <h3 className="text-xs font-bold text-green-500 uppercase tracking-widest mb-2">Jika Sudah Selesai</h3>
+                      <p className="text-xs text-text-muted mb-4">Jika pengerjaan sudah sesuai, Anda bisa langsung menyelesaikan pesanan. Dana akan segera diteruskan ke Partner.</p>
+                      <button
+                        onClick={handleConfirmFinish}
+                        disabled={isCompleting}
+                        className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 rounded-xl shadow-lg shadow-green-500/10 transition-all disabled:opacity-50 text-xs uppercase tracking-widest"
+                      >
+                        {isCompleting ? 'MEMPROSES...' : 'SELESAIKAN PESANAN'}
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -429,8 +606,18 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                         SENGKETA — MENUNGGU KEPUTUSAN ADMIN
                       </div>
                     ) : selectedOrder.cancelled_by === 'jokies' ? (
-                      <div className="w-full bg-orange-primary/10 border border-orange-primary/20 text-orange-primary font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
-                        MENUNGGU PERSETUJUAN PARTNER
+                      <div className="space-y-3">
+                        <div className="w-full bg-orange-primary/10 border border-orange-primary/20 text-orange-primary font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
+                          MENUNGGU PERSETUJUAN PARTNER
+                        </div>
+                        <button
+                          onClick={handleRevertCancel}
+                          disabled={isRevertingCancel}
+                          className="w-full border border-green-500/30 text-green-500 font-bold py-3 rounded-xl text-xs uppercase tracking-widest hover:bg-green-500/10 transition-all disabled:opacity-50"
+                        >
+                          {isRevertingCancel ? 'MEMPROSES...' : 'BATALKAN PERMINTAAN PEMBATALAN'}
+                        </button>
+                        <p className="text-xs text-text-faint text-center">Membatalkan permintaan pembatalan dan melanjutkan pesanan.</p>
                       </div>
                     ) : (
                       <div className="bg-red-500/5 p-5 rounded-2xl border border-red-500/20">
@@ -458,6 +645,29 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                   </div>
                 )}
 
+                {/* Resume Payment: available for pending_payment orders */}
+                {selectedOrder.status === 'pending_payment' && (() => {
+                  const remaining = paymentCountdowns[selectedOrder.id] ?? 0;
+                  const mins = Math.floor(remaining / 60);
+                  const secs = remaining % 60;
+                  return (
+                    <div className="bg-amber-500/5 p-5 rounded-2xl border border-amber-500/20">
+                      <h3 className="text-xs font-bold text-amber-500 uppercase tracking-widest mb-3">Menunggu Pembayaran</h3>
+                      <p className="text-xs text-text-muted mb-2">Selesaikan pembayaran sebelum waktu habis. Pesanan akan otomatis dibatalkan jika tidak dibayar.</p>
+                      <p className="text-sm font-bold mb-3" style={{ color: remaining > 60 ? 'var(--color-text-main)' : '#ef4444' }}>
+                        Sisa waktu: {String(mins).padStart(2, '0')}:{String(secs).padStart(2, '0')}
+                      </p>
+                      <button
+                        onClick={() => handleResumePayment(selectedOrder.id)}
+                        disabled={resumingPayment === selectedOrder.id || remaining === 0}
+                        className="w-full bg-amber-500 hover:bg-amber-400 text-black font-bold py-3 rounded-xl shadow-lg shadow-amber-500/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-xs uppercase tracking-widest"
+                      >
+                        {remaining === 0 ? 'WAKTU HABIS' : resumingPayment === selectedOrder.id ? 'MEMBUKA...' : 'BAYAR SEKARANG'}
+                      </button>
+                    </div>
+                  );
+                })()}
+
                 {/* Cancel: available for upcoming/ongoing (not when already pending_cancellation) */}
                 {['upcoming', 'ongoing'].includes(selectedOrder.status) && (
                   <div className="bg-red-500/5 p-5 rounded-2xl border border-red-500/20">
@@ -466,10 +676,10 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                       const minsUntil = (new Date(selectedOrder.scheduled_at).getTime() - Date.now()) / (1000 * 60);
                       return minsUntil >= 60
                         ? <p className="text-xs text-text-muted mb-3">Pembatalan otomatis tanpa persetujuan Partner. Refund sebesar harga paket (biaya admin tidak dikembalikan).</p>
-                        : <p className="text-xs text-text-muted mb-3">Kurang dari 1 jam sebelum sesi. Pembatalan memerlukan persetujuan Partner.</p>;
+                        : <p className="text-xs text-text-muted mb-3">Kurang dari 1 jam sebelum sesi. Pembatalan memerlukan persetujuan Partner. Refund sebesar harga paket (biaya admin tidak dikembalikan). Jika Partner menolak, masalah dieskalasi ke Admin.</p>;
                     })()}
                     {selectedOrder.status === 'ongoing' && (
-                      <p className="text-xs text-text-muted mb-3">Sesi sedang berjalan. Pembatalan memerlukan persetujuan Partner.</p>
+                      <p className="text-xs text-text-muted mb-3">Sesi sedang berjalan. Pembatalan memerlukan persetujuan Partner. Refund sebesar harga paket (biaya admin tidak dikembalikan). Jika Partner menolak, masalah dieskalasi ke Admin.</p>
                     )}
                     <textarea
                       placeholder="Alasan pembatalan..."
@@ -495,32 +705,220 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
                   </div>
                 )}
 
-                <button className="w-full border bg-bg-sidebar border-border-main text-text-main hover:border-orange-primary/30 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2">
-                  <MessageSquare size={16} /> CHAT ADMIN "MINOX"
+                <button
+                  onClick={() => {
+                    const subject = encodeURIComponent(`Bantuan Pesanan #${selectedOrder.id}`);
+                    const body = encodeURIComponent(`Order ID: #${selectedOrder.id}\nPaket: ${selectedOrder.title}\nStatus: ${selectedOrder.status}\nTanggal: ${selectedOrder.scheduled_at}\n\nKeterangan:\n[tuliskan masalah Anda di sini]`);
+                    window.open(`mailto:jokgen.acinonyx@gmail.com?subject=${subject}&body=${body}`);
+                  }}
+                  className="w-full border bg-bg-sidebar border-border-main text-text-main hover:border-orange-primary/30 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
+                >
+                  EMAIL ADMIN "MINOX"
                 </button>
               </div>
             </div>
 
-            {/* Right Column: Order Chat */}
+            {/* Right Column: Order Chat + Rating */}
             {selectedOrder.status !== 'pending' && (
               <div className="space-y-6 self-start">
                 {/* Desktop: show inline chat */}
-                <div className="hidden lg:block lg:sticky lg:top-4">
+                <div className="hidden lg:block lg:sticky lg:top-4 space-y-4">
                   <OrderChat
                     sessionId={selectedOrder.id}
                     userId={user.id}
                     username={user.username || user.full_name}
                     isActive={!['completed', 'cancelled'].includes(selectedOrder.status)}
                   />
+                  {/* Inline Rating — completed & not yet rated */}
+                  {selectedOrder.status === 'completed' && !selectedOrder.has_rating && (
+                    <div className="bg-orange-primary/5 border border-orange-primary/20 rounded-2xl overflow-hidden">
+                      <div className="p-4 border-b border-orange-primary/10 text-center">
+                        <h3 className="text-sm font-bold text-orange-primary uppercase tracking-widest mb-1">Beri Rating untuk Kijo</h3>
+                        <p className="text-xs text-text-muted">Bagaimana pengalaman mabar Anda dengan {selectedOrder.kijo_name}?</p>
+                      </div>
+                      <div className="p-4 space-y-4">
+                        <div className="flex flex-col items-center gap-2">
+                          <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Kepuasan Umum (Wajib)</p>
+                          <div className="flex gap-1">
+                            {[1,2,3,4,5].map((s) => (
+                              <button key={s} onClick={() => setRatingData({...ratingData, stars: s})}
+                                className={`p-2 transition-all ${ratingData.stars >= s ? 'text-orange-primary scale-110' : 'text-text-muted opacity-30'}`}
+                              >
+                                <Star size={24} fill={ratingData.stars >= s ? 'currentColor' : 'none'} />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-text-muted uppercase tracking-widest text-center">Skill</p>
+                            <div className="flex justify-center gap-1">
+                              {[1,2,3,4,5].map((s) => (
+                                <button key={s} onClick={() => setRatingData({...ratingData, skillRating: s})}
+                                  className={`p-1 transition-all ${ratingData.skillRating >= s ? 'text-orange-primary' : 'text-text-muted opacity-30'}`}
+                                >
+                                  <Star size={12} fill={ratingData.skillRating >= s ? 'currentColor' : 'none'} />
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-text-muted uppercase tracking-widest text-center">Attitude</p>
+                            <div className="flex justify-center gap-1">
+                              {[1,2,3,4,5].map((s) => (
+                                <button key={s} onClick={() => setRatingData({...ratingData, attitudeRating: s})}
+                                  className={`p-1 transition-all ${ratingData.attitudeRating >= s ? 'text-orange-primary' : 'text-text-muted opacity-30'}`}
+                                >
+                                  <Star size={12} fill={ratingData.attitudeRating >= s ? 'currentColor' : 'none'} />
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Keunggulan Kijo (Min. 1)</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {TRAIT_BADGES.map((badge) => (
+                              <button key={badge.id}
+                                onClick={() => {
+                                  const tags = ratingData.tags.includes(badge.label)
+                                    ? ratingData.tags.filter(t => t !== badge.label)
+                                    : [...ratingData.tags, badge.label];
+                                  setRatingData({...ratingData, tags});
+                                }}
+                                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all border ${
+                                  ratingData.tags.includes(badge.label)
+                                    ? 'bg-orange-primary border-orange-primary text-black'
+                                    : 'bg-bg-main border-border-main text-text-muted hover:border-orange-primary/30'
+                                }`}
+                              >{badge.label}</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Testimoni (Opsional)</p>
+                          <textarea
+                            placeholder="Tuliskan kesan Anda..."
+                            className="w-full bg-bg-main border border-border-main rounded-xl p-3 text-xs text-text-main focus:outline-none focus:border-orange-primary h-16 resize-none"
+                            value={ratingData.comment}
+                            onChange={(e) => setRatingData({...ratingData, comment: e.target.value})}
+                          />
+                        </div>
+                        <button
+                          onClick={handleSubmitRating}
+                          disabled={ratingData.tags.length === 0}
+                          className="w-full py-3 rounded-xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest hover:scale-[1.02] transition-all disabled:opacity-50 shadow-lg shadow-orange-primary/20"
+                        >
+                          KIRIM ULASAN
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {selectedOrder.status === 'completed' && !!selectedOrder.has_rating && (
+                    <div className="bg-green-500/5 border border-green-500/20 rounded-2xl p-4 text-center">
+                      <p className="text-xs font-bold text-green-500 uppercase tracking-widest">✓ Ulasan Terkirim</p>
+                      <p className="text-xs text-text-muted mt-1">Terima kasih sudah memberi ulasan untuk Kijo ini.</p>
+                    </div>
+                  )}
                 </div>
-                {/* Mobile/Tablet: show button to open chat */}
-                <div className="lg:hidden">
+                {/* Mobile/Tablet: show button to open chat, rating below */}
+                <div className="lg:hidden space-y-4">
                   <button
                     onClick={() => setShowMobileChat(true)}
                     className="w-full bg-orange-primary text-black font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-orange-primary/10"
                   >
-                    <MessageSquare size={18} /> BUKA CHAT PESANAN
+                    BUKA CHAT PESANAN
                   </button>
+                  {selectedOrder.status === 'completed' && !selectedOrder.has_rating && (
+                    <div className="bg-orange-primary/5 border border-orange-primary/20 rounded-2xl overflow-hidden">
+                      <div className="p-4 border-b border-orange-primary/10 text-center">
+                        <h3 className="text-sm font-bold text-orange-primary uppercase tracking-widest mb-1">Beri Rating untuk Kijo</h3>
+                        <p className="text-xs text-text-muted">Bagaimana pengalaman mabar Anda dengan {selectedOrder.kijo_name}?</p>
+                      </div>
+                      <div className="p-4 space-y-4">
+                        <div className="flex flex-col items-center gap-2">
+                          <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Kepuasan Umum (Wajib)</p>
+                          <div className="flex gap-1">
+                            {[1,2,3,4,5].map((s) => (
+                              <button key={s} onClick={() => setRatingData({...ratingData, stars: s})}
+                                className={`p-2 transition-all ${ratingData.stars >= s ? 'text-orange-primary scale-110' : 'text-text-muted opacity-30'}`}
+                              >
+                                <Star size={28} fill={ratingData.stars >= s ? 'currentColor' : 'none'} />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-text-muted uppercase tracking-widest text-center">Skill</p>
+                            <div className="flex justify-center gap-1">
+                              {[1,2,3,4,5].map((s) => (
+                                <button key={s} onClick={() => setRatingData({...ratingData, skillRating: s})}
+                                  className={`p-1 transition-all ${ratingData.skillRating >= s ? 'text-orange-primary' : 'text-text-muted opacity-30'}`}
+                                >
+                                  <Star size={14} fill={ratingData.skillRating >= s ? 'currentColor' : 'none'} />
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-text-muted uppercase tracking-widest text-center">Attitude</p>
+                            <div className="flex justify-center gap-1">
+                              {[1,2,3,4,5].map((s) => (
+                                <button key={s} onClick={() => setRatingData({...ratingData, attitudeRating: s})}
+                                  className={`p-1 transition-all ${ratingData.attitudeRating >= s ? 'text-orange-primary' : 'text-text-muted opacity-30'}`}
+                                >
+                                  <Star size={14} fill={ratingData.attitudeRating >= s ? 'currentColor' : 'none'} />
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Keunggulan Kijo (Min. 1)</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {TRAIT_BADGES.map((badge) => (
+                              <button key={badge.id}
+                                onClick={() => {
+                                  const tags = ratingData.tags.includes(badge.label)
+                                    ? ratingData.tags.filter(t => t !== badge.label)
+                                    : [...ratingData.tags, badge.label];
+                                  setRatingData({...ratingData, tags});
+                                }}
+                                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all border ${
+                                  ratingData.tags.includes(badge.label)
+                                    ? 'bg-orange-primary border-orange-primary text-black'
+                                    : 'bg-bg-main border-border-main text-text-muted hover:border-orange-primary/30'
+                                }`}
+                              >{badge.label}</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Testimoni (Opsional)</p>
+                          <textarea
+                            placeholder="Tuliskan kesan Anda..."
+                            className="w-full bg-bg-main border border-border-main rounded-xl p-3 text-sm text-text-main focus:outline-none focus:border-orange-primary h-20 resize-none"
+                            value={ratingData.comment}
+                            onChange={(e) => setRatingData({...ratingData, comment: e.target.value})}
+                          />
+                        </div>
+                        <button
+                          onClick={handleSubmitRating}
+                          disabled={ratingData.tags.length === 0}
+                          className="w-full py-3 rounded-xl bg-orange-primary text-black font-bold text-xs uppercase tracking-widest hover:scale-[1.02] transition-all disabled:opacity-50 shadow-lg shadow-orange-primary/20"
+                        >
+                          KIRIM ULASAN
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {selectedOrder.status === 'completed' && !!selectedOrder.has_rating && (
+                    <div className="bg-green-500/5 border border-green-500/20 rounded-2xl p-4 text-center">
+                      <p className="text-xs font-bold text-green-500 uppercase tracking-widest">✓ Ulasan Terkirim</p>
+                      <p className="text-xs text-text-muted mt-1">Terima kasih sudah memberi ulasan untuk Kijo ini.</p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -634,7 +1032,7 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
         <button onClick={fetchOrders}
           className="bg-bg-sidebar border border-border-main p-3 rounded-xl text-text-muted hover:text-orange-primary hover:border-orange-primary/30 transition-all"
         >
-          <Zap size={18} />
+          <span className="font-bold text-sm">↻</span>
         </button>
       </header>
 
@@ -646,7 +1044,6 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
       ) : orders.length === 0 ? (
         <div className="bg-bg-sidebar border border-border-main rounded-2xl p-12 text-center space-y-5">
           <div className="w-20 h-20 bg-bg-main rounded-full flex items-center justify-center mx-auto text-text-muted border border-border-main">
-            <Package size={40} />
           </div>
           <div className="max-w-xs mx-auto">
             <h3 className="text-text-main font-bold text-xl mb-2">Belum Ada Pesanan</h3>
@@ -658,22 +1055,91 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
         </div>
       ) : (
         <div className="space-y-8">
+          {/* ─── Search Bar ─── */}
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Cari pesanan (nama, game, ID)..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-bg-sidebar border border-border-main rounded-xl px-4 py-3 pl-10 text-sm text-text-main placeholder:text-text-faint focus:outline-none focus:border-orange-primary/50 transition-colors"
+            />
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-faint text-sm">&#128269;</span>
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-faint hover:text-text-main text-xs font-bold">
+                ✕
+              </button>
+            )}
+          </div>
+
+          {/* ─── Menunggu Pembayaran ─── */}
+          {groupedOrders.pendingPayment.length > 0 && (
+            <div className="bg-bg-card border border-amber-500/30 rounded-2xl p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <h3 className="text-text-main font-bold text-sm uppercase tracking-wider">Menunggu Pembayaran</h3>
+                <span className="ml-auto text-xs text-amber-500 font-bold">{groupedOrders.pendingPayment.length}</span>
+              </div>
+              <div className="space-y-3">
+                {groupedOrders.pendingPayment.map(order => {
+                  const remaining = paymentCountdowns[order.id] ?? 0;
+                  const mins = Math.floor(remaining / 60);
+                  const secs = remaining % 60;
+                  return (
+                    <div key={order.id} className="bg-bg-main/50 border border-border-main rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-text-main font-bold text-sm truncate">{order.title || `Pesanan #${order.id}`}</p>
+                        <p className="text-text-muted text-xs mt-1">
+                          {order.kijo_name} • {toJakartaDate(order.scheduled_at)} {toJakartaTime(order.scheduled_at)} • {formatDuration(order.duration)}
+                        </p>
+                        <p className="text-xs mt-1 font-bold" style={{ color: remaining > 60 ? 'var(--color-text-muted)' : '#ef4444' }}>
+                          Sisa waktu: {String(mins).padStart(2, '0')}:{String(secs).padStart(2, '0')}
+                        </p>
+                      </div>
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          onClick={() => handleResumePayment(order.id)}
+                          disabled={resumingPayment === order.id || remaining === 0}
+                          className="px-5 py-2.5 bg-amber-500 text-black font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-amber-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-amber-500/20"
+                        >
+                          {resumingPayment === order.id ? 'Membuka...' : 'BAYAR SEKARANG'}
+                        </button>
+                        <button
+                          onClick={() => setSelectedOrder(order)}
+                          className="px-4 py-2.5 bg-bg-card border border-border-main text-text-muted font-bold text-xs uppercase tracking-wider rounded-xl hover:text-text-main transition-all"
+                        >
+                          Detail
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* ─── Sesi Mendatang ─── */}
-          <OrderSection title="Sesi Mendatang" icon={<Calendar size={16} />} iconBg="bg-orange-primary/10" iconColor="text-orange-primary" count={groupedOrders.upcoming.length}>
+          <OrderSection title="Sesi Mendatang" iconBg="bg-orange-primary/10" iconColor="text-orange-primary" count={groupedOrders.upcoming.length}>
             {groupedOrders.upcoming.map(order => (
               <OrderListCard key={order.id} order={order} onClick={() => setSelectedOrder(order)} />
             ))}
           </OrderSection>
 
           {/* ─── Sedang Berjalan ─── */}
-          <OrderSection title="Sedang Berjalan" icon={<ActivityIcon size={16} />} iconBg="bg-blue-500/10" iconColor="text-blue-500" count={groupedOrders.ongoing.length}>
+          <OrderSection title="Sedang Berjalan" iconBg="bg-blue-500/10" iconColor="text-blue-500" count={groupedOrders.ongoing.length}>
             {groupedOrders.ongoing.map(order => (
               <OrderListCard key={order.id} order={order} onClick={() => setSelectedOrder(order)} active />
             ))}
           </OrderSection>
 
+          {/* ─── Pembatalan ─── */}
+          <OrderSection title="Pembatalan" iconBg="bg-red-500/10" iconColor="text-red-500" count={groupedOrders.cancellation.length}>
+            {groupedOrders.cancellation.map(order => (
+              <OrderListCard key={order.id} order={order} onClick={() => setSelectedOrder(order)} />
+            ))}
+          </OrderSection>
+
           {/* ─── History ─── */}
-          <OrderSection title="History Pesanan" icon={<HistoryIcon size={16} />} iconBg="bg-bg-card" iconColor="text-text-muted" count={groupedOrders.history.length}>
+          <OrderSection title="History Pesanan" iconBg="bg-bg-card" iconColor="text-text-muted" count={groupedOrders.history.length}>
             {groupedOrders.history.map(order => (
               <OrderListCard key={order.id} order={order} onClick={() => setSelectedOrder(order)} />
             ))}
@@ -685,14 +1151,13 @@ export default function OrdersPage({ user, globalGames, onGoToMarketplace }: Ord
 }
 
 // ─── Section wrapper (box-in-box layout) ───
-function OrderSection({ title, icon, iconBg, iconColor, count, children }: {
-  title: string; icon: React.ReactNode; iconBg: string; iconColor: string; count: number; children: React.ReactNode;
+function OrderSection({ title, iconBg, iconColor, count, children }: {
+  title: string; iconBg: string; iconColor: string; count: number; children: React.ReactNode;
 }) {
   if (count === 0) return null;
   return (
     <section className="bg-bg-sidebar border border-border-main rounded-2xl overflow-hidden">
       <div className="flex items-center gap-3 p-4 md:p-5 border-b border-border-main">
-        <div className={`w-8 h-8 rounded-lg ${iconBg} flex items-center justify-center ${iconColor}`}>{icon}</div>
         <h2 className="text-xs font-bold text-text-muted uppercase tracking-wider flex-1">{title}</h2>
         <span className="text-xs font-mono font-bold text-text-muted">{count}</span>
       </div>
@@ -713,9 +1178,6 @@ function OrderListCard({ order, onClick, active }: { order: any; onClick: () => 
       }`}
     >
       <div className="flex items-center gap-3">
-        <div className={`w-10 h-10 rounded-xl flex-shrink-0 flex items-center justify-center ${active ? 'bg-blue-500/10 text-blue-500' : 'bg-orange-primary/10 text-orange-primary'}`}>
-          <Gamepad2 size={20} />
-        </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
             <h4 className="text-sm font-bold text-text-main truncate">{order.title}</h4>
@@ -730,7 +1192,6 @@ function OrderListCard({ order, onClick, active }: { order: any; onClick: () => 
         <div className="text-right flex-shrink-0">
           <p className="text-sm font-bold text-text-main font-mono">Rp {(order.total_price || order.price).toLocaleString()}</p>
         </div>
-        <ChevronRight size={16} className="text-text-muted group-hover:text-orange-primary transition-colors flex-shrink-0" />
       </div>
     </div>
   );

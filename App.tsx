@@ -1,36 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
-  LayoutDashboard, 
-  Store, 
-  Bell, 
-  UserCircle, 
-  Settings, 
-  Clock, 
-  Calendar, 
-  History, 
-  Activity,
-  LogOut,
-  ChevronRight,
-  ChevronLeft,
-  Menu,
-  X,
-  User as UserIcon,
   Sun,
   Moon,
-  ShoppingBag,
-  Image as ImageIcon,
-  Wallet,
-  Zap,
-  TrendingUp,
-  Package,
-  ArrowRight,
-  ShieldCheck,
-  Gamepad2,
-  Trophy,
-  Star,
-  MessageSquare
+  Star
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { io, Socket } from 'socket.io-client';
 import AuthPage from './components/AuthPage';
 import EtalasePage from './components/EtalasePage';
 import NotificationPage from './components/NotificationPage';
@@ -118,12 +93,14 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [view, setView] = useState<'dashboard' | 'etalase' | 'notifications' | 'traits' | 'account' | 'marketplace' | 'orders' | 'kijo-store'>('dashboard');
+  const [subView, setSubView] = useState<string>('statistik');
   const [selectedKijoId, setSelectedKijoId] = useState<number | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [mode, setMode] = useState<'kijo' | 'jokies'>('jokies');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   const [pages, setPages] = useState({ upcoming: 1, history: 1 });
+  const [dashOrderTab, setDashOrderTab] = useState<'upcoming' | 'ongoing' | 'completed' | 'cancelled'>('upcoming');
   const [historySort, setHistorySort] = useState('all');
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showVerification, setShowVerification] = useState(false);
@@ -176,7 +153,7 @@ export default function App() {
     const savedMode = localStorage.getItem('kijo_mode') as 'kijo' | 'jokies';
     if (savedMode) {
       setMode(savedMode);
-      if (savedMode === 'jokies') setView('marketplace');
+      if (savedMode === 'jokies') { setView('marketplace'); setSubView(''); }
     }
 
     try {
@@ -279,6 +256,14 @@ export default function App() {
     };
   }, [user?.id, historySort]);
 
+  // Sync selectedSession with fresh data whenever sessions are refreshed
+  useEffect(() => {
+    if (!selectedSession) return;
+    const all = [...(sessions.upcoming || []), ...(sessions.ongoing || []), ...(sessions.history || [])];
+    const fresh = all.find((s: any) => s.id === selectedSession.id);
+    if (fresh) setSelectedSession(fresh);
+  }, [sessions]);
+
   const handleLogin = (userData: User) => {
     setUser(userData);
     localStorage.setItem('kijo_user', JSON.stringify(userData));
@@ -288,10 +273,12 @@ export default function App() {
     if (userData.role === 'jokies') {
       setMode('jokies');
       setView('marketplace');
+      setSubView('');
       localStorage.setItem('kijo_mode', 'jokies');
     } else {
       setMode('kijo');
       setView('dashboard');
+      setSubView('statistik');
       localStorage.setItem('kijo_mode', 'kijo');
     }
   };
@@ -310,10 +297,23 @@ export default function App() {
     setNeedsSetup(false);
     setMode('kijo');
     setView('dashboard');
+    setSubView('statistik');
   };
 
-  const handleNavClick = (newView: any) => {
+  const handleNavClick = (newView: any, newSubView?: string) => {
     setView(newView);
+    // Set default subView for each main nav
+    if (newSubView) {
+      setSubView(newSubView);
+    } else {
+      switch (newView) {
+        case 'dashboard': setSubView('statistik'); break;
+        case 'etalase': setSubView('operasional'); break;
+        case 'notifications': setSubView('notifikasi'); break;
+        case 'account': setSubView('profil'); break;
+        default: setSubView(''); break;
+      }
+    }
     if (mode === 'jokies' || window.innerWidth < 1024) {
       setIsSidebarOpen(false);
     }
@@ -331,18 +331,20 @@ export default function App() {
       // Trying to switch to Kijo
       if (user?.role !== 'kijo') {
         // Not a kijo yet, redirect to account page to verify
-        setView('account');
+        handleNavClick('account', 'profil');
         setIsSidebarOpen(false);
         return;
       }
       setMode('kijo');
       localStorage.setItem('kijo_mode', 'kijo');
       setView('dashboard');
+      setSubView('statistik');
     } else {
       // Switching back to Jokies
       setMode('jokies');
       localStorage.setItem('kijo_mode', 'jokies');
       setView('marketplace');
+      setSubView('');
     }
     setIsSidebarOpen(false);
   };
@@ -362,7 +364,6 @@ export default function App() {
     return (
       <div className="min-h-screen bg-bg-main flex flex-col items-center justify-center p-10 text-center">
         <div className="w-24 h-24 bg-orange-primary/10 rounded-2xl flex items-center justify-center text-orange-primary mb-8 animate-bounce">
-          <Clock size={48} />
         </div>
         <h1 className="text-4xl font-bold text-text-main uppercase tracking-tighter mb-4">The system is busy right now!</h1>
         <p className="text-text-muted text-lg font-bold uppercase tracking-widest mb-8">We will back soon!</p>
@@ -397,7 +398,6 @@ export default function App() {
       <div className={`min-h-screen bg-bg-main flex items-center justify-center p-6 ${theme}`}>
         <div className="max-w-md w-full bg-bg-sidebar border border-red-500/30 rounded-2xl p-10 text-center shadow-2xl space-y-6">
           <div className="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center text-red-500 mx-auto border border-red-500/20">
-            <ShieldCheck size={40} />
           </div>
           <div>
             <h2 className="text-2xl font-bold text-text-main uppercase tracking-tighter mb-2">Akun Ditangguhkan</h2>
@@ -508,76 +508,83 @@ export default function App() {
               }
             `}
           >
-          <div className="p-6 border-b border-border-main flex justify-center items-center shrink-0">
-            <span className="text-orange-primary font-extrabold text-xl tracking-wider">ACINONYX</span>
+          <div className="px-6 py-5 border-b border-border-main shrink-0">
+            <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-text-faint mb-0.5">Acinonyx</p>
+            <h2 className="text-base font-bold text-orange-primary tracking-wide uppercase">Kijo Panel</h2>
           </div>
           
           <div className="flex-1 overflow-y-auto no-scrollbar">
-            <nav className="mt-8 px-4 space-y-2">
+            <nav className="mt-6 px-4 space-y-5">
               {mode === 'kijo' ? (
                 <>
-                  <NavItem 
-                    icon={<LayoutDashboard size={18} />} 
-                    label="Dashboard" 
-                    active={view === 'dashboard'} 
-                    onClick={() => handleNavClick('dashboard')}
-                  />
-                  <NavItem 
-                    icon={<Store size={18} />} 
-                    label="Etalase" 
-                    active={view === 'etalase'} 
-                    onClick={() => handleNavClick('etalase')}
-                  />
-                  <NavItem 
-                    icon={<Bell size={18} />} 
-                    label="Notifikasi" 
-                    active={view === 'notifications'} 
-                    onClick={() => handleNavClick('notifications')}
-                    badge={unreadNotifications > 0 ? unreadNotifications : undefined}
-                  />
-                  <NavItem 
-                    icon={<Activity size={18} />} 
-                    label="Traits" 
-                    active={view === 'traits'} 
-                    onClick={() => handleNavClick('traits')}
-                  />
+                  {/* Dashboard Section */}
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-widest text-text-faint px-3 mb-2">Dashboard</p>
+                    <div className="space-y-0.5 pl-3">
+                      <NavItem icon={null} label="Statistik" active={view === 'dashboard' && subView === 'statistik'} onClick={() => handleNavClick('dashboard', 'statistik')} />
+                      <NavItem icon={null} label="Pesanan" active={view === 'dashboard' && subView === 'pesanan'} onClick={() => handleNavClick('dashboard', 'pesanan')} />
+                    </div>
+                  </div>
+
+                  {/* Etalase Section */}
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-widest text-text-faint px-3 mb-2">Etalase</p>
+                    <div className="space-y-0.5 pl-3">
+                      <NavItem icon={null} label="Waktu Operasional" active={view === 'etalase' && subView === 'operasional'} onClick={() => handleNavClick('etalase', 'operasional')} />
+                      <NavItem icon={null} label="Paket Saya" active={view === 'etalase' && subView === 'paket'} onClick={() => handleNavClick('etalase', 'paket')} />
+                      <NavItem icon={null} label="Pesan" active={view === 'etalase' && subView === 'pesan'} onClick={() => handleNavClick('etalase', 'pesan')} />
+                    </div>
+                  </div>
+
+                  {/* Notifikasi Section */}
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-widest text-text-faint px-3 mb-2">Notifikasi</p>
+                    <div className="space-y-0.5 pl-3">
+                      <NavItem icon={null} label="Notifikasi" active={view === 'notifications' && subView === 'notifikasi'} onClick={() => handleNavClick('notifications', 'notifikasi')} badge={unreadNotifications > 0 ? unreadNotifications : undefined} />
+                    </div>
+                  </div>
+
+                  {/* Akun Section */}
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-widest text-text-faint px-3 mb-2">Akun</p>
+                    <div className="space-y-0.5 pl-3">
+                      <NavItem icon={null} label="Profil" active={view === 'account' && subView === 'profil'} onClick={() => handleNavClick('account', 'profil')} />
+                      <NavItem icon={<Star size={16} />} label="Penilaian" active={view === 'account' && subView === 'penilaian'} onClick={() => handleNavClick('account', 'penilaian')} />
+                      <NavItem icon={null} label="Pendapatan" active={view === 'account' && subView === 'pendapatan'} onClick={() => handleNavClick('account', 'pendapatan')} />
+                      <NavItem icon={null} label="Detail Akun Game" active={view === 'account' && subView === 'game-detail'} onClick={() => handleNavClick('account', 'game-detail')} />
+                      <NavItem icon={null} label="Log" active={view === 'account' && subView === 'log'} onClick={() => handleNavClick('account', 'log')} />
+                    </div>
+                  </div>
                 </>
               ) : (
                 <>
-                  <NavItem 
-                    icon={<ShoppingBag size={18} />} 
-                    label="Beranda" 
-                    active={view === 'marketplace'} 
+                  <NavItem
+                    icon={null}
+                    label="Beranda"
+                    active={view === 'marketplace'}
                     onClick={() => handleNavClick('marketplace')}
                   />
-                  <NavItem 
-                    icon={<History size={18} />} 
-                    label="Pesanan" 
-                    active={view === 'orders'} 
+                  <NavItem
+                    icon={null}
+                    label="Pesanan"
+                    active={view === 'orders'}
                     onClick={() => handleNavClick('orders')}
                   />
                   <NavItem
-                    icon={<Bell size={18} />} 
-                    label="Notifikasi" 
-                    active={view === 'notifications'} 
+                    icon={null}
+                    label="Notifikasi"
+                    active={view === 'notifications'}
                     onClick={() => handleNavClick('notifications')}
                     badge={unreadNotifications > 0 ? unreadNotifications : undefined}
                   />
                   <NavItem 
-                    icon={<Activity size={18} />} 
-                    label="Traits" 
-                    active={view === 'traits'} 
-                    onClick={() => handleNavClick('traits')}
+                    icon={null} 
+                    label="Akun" 
+                    active={view === 'account'} 
+                    onClick={() => handleNavClick('account')}
                   />
                 </>
               )}
-              
-              <NavItem 
-                icon={<UserCircle size={18} />} 
-                label="Akun" 
-                active={view === 'account'} 
-                onClick={() => handleNavClick('account')}
-              />
             </nav>
           </div>
 
@@ -605,7 +612,6 @@ export default function App() {
                     : 'bg-orange-primary text-black shadow-orange-primary/10'
                 }`}
               >
-                {mode === 'kijo' ? <ShoppingBag size={18} /> : <Activity size={18} />}
                 <span className="text-xs uppercase tracking-widest">
                   {mode === 'kijo' ? 'Pindah ke Jokies' : (user?.role === 'kijo' ? 'Pindah ke Kijo' : 'Jadi Kijo')}
                 </span>
@@ -615,7 +621,6 @@ export default function App() {
                 onClick={handleLogout}
                 className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-text-muted hover:text-red-500 hover:bg-red-500/5 group"
               >
-                <LogOut size={18} className="group-hover:text-red-500" />
                 <span className="text-xs font-bold uppercase tracking-wider">Logout</span>
               </button>
             </div>
@@ -623,16 +628,16 @@ export default function App() {
         </>
       )}
 
-      {/* Floating Active Order Indicator */}
-      <FloatingOrderIndicator
+      {/* Mobile Chat Popup Notification Bar */}
+      <MobileChatPopup
         user={user}
         mode={mode}
         view={view}
         selectedSession={selectedSession}
-        selectedOrder={null}
-        onNavigate={(session: any) => {
+        onOpenChat={(session: any) => {
           if (mode === 'kijo') {
             setView('dashboard');
+            setSubView('pesanan');
             setSelectedSession(session);
           } else {
             setView('orders');
@@ -645,70 +650,58 @@ export default function App() {
         <nav className="fixed bottom-0 left-0 right-0 bg-bg-sidebar border-t border-border-main z-[60] flex items-center justify-around px-2 py-3 shadow-[0_-4px_20px_rgba(0,0,0,0.1)]">
           {mode === 'kijo' ? (
             <>
-              <BottomNavItem 
-                icon={<LayoutDashboard size={20} />} 
-                label="Home" 
-                active={view === 'dashboard'} 
-                onClick={() => setView('dashboard')}
+              <BottomNavItem
+                icon={null}
+                label="Home"
+                active={view === 'dashboard'}
+                onClick={() => handleNavClick('dashboard', 'statistik')}
               />
-              <BottomNavItem 
-                icon={<Store size={20} />} 
-                label="Etalase" 
-                active={view === 'etalase'} 
-                onClick={() => setView('etalase')}
+              <BottomNavItem
+                icon={null}
+                label="Etalase"
+                active={view === 'etalase'}
+                onClick={() => handleNavClick('etalase', 'operasional')}
               />
-              <BottomNavItem 
-                icon={<Bell size={20} />} 
-                label="Inbox" 
-                active={view === 'notifications'} 
-                onClick={() => setView('notifications')}
+              <BottomNavItem
+                icon={null}
+                label="Inbox"
+                active={view === 'notifications'}
+                onClick={() => handleNavClick('notifications', 'notifikasi')}
                 badge={unreadNotifications > 0 ? unreadNotifications : undefined}
               />
-              <BottomNavItem 
-                icon={<Activity size={20} />} 
-                label="Traits" 
-                active={view === 'traits'} 
-                onClick={() => setView('traits')}
-              />
-              <BottomNavItem 
-                icon={<UserCircle size={20} />} 
-                label="Akun" 
-                active={view === 'account'} 
-                onClick={() => setView('account')}
+              <BottomNavItem
+                icon={null}
+                label="Akun"
+                active={view === 'account'}
+                onClick={() => handleNavClick('account', 'profil')}
               />
             </>
           ) : (
             <>
-              <BottomNavItem 
-                icon={<ShoppingBag size={20} />} 
-                label="Home" 
-                active={view === 'marketplace'} 
+              <BottomNavItem
+                icon={null}
+                label="Home"
+                active={view === 'marketplace'}
                 onClick={() => setView('marketplace')}
               />
-              <BottomNavItem 
-                icon={<History size={20} />} 
-                label="Pesanan" 
-                active={view === 'orders'} 
+              <BottomNavItem
+                icon={null}
+                label="Pesanan"
+                active={view === 'orders'}
                 onClick={() => setView('orders')}
               />
-              <BottomNavItem 
-                icon={<Bell size={20} />} 
-                label="Inbox" 
-                active={view === 'notifications'} 
+              <BottomNavItem
+                icon={null}
+                label="Inbox"
+                active={view === 'notifications'}
                 onClick={() => setView('notifications')}
                 badge={unreadNotifications > 0 ? unreadNotifications : undefined}
               />
-              <BottomNavItem 
-                icon={<Activity size={20} />} 
-                label="Traits" 
-                active={view === 'traits'} 
-                onClick={() => setView('traits')}
-              />
-              <BottomNavItem 
-                icon={<UserCircle size={20} />} 
-                label="Akun" 
-                active={view === 'account'} 
-                onClick={() => setView('account')}
+              <BottomNavItem
+                icon={null}
+                label="Akun"
+                active={view === 'account'}
+                onClick={() => handleNavClick('account', 'profil')}
               />
             </>
           )}
@@ -720,40 +713,40 @@ export default function App() {
         {/* Mobile/Desktop Header for Jokies (Sticky) */}
         <header className={`flex ${mode === 'jokies' ? 'justify-between' : 'xl:hidden'} sticky top-0 left-0 right-0 h-16 bg-bg-sidebar border-b border-border-main z-[50] items-center px-4 sm:px-6 shadow-sm`}>
           <div className="flex items-center gap-4 md:gap-8 flex-1">
-            <span className="text-orange-primary font-bold text-sm sm:text-base md:text-xl tracking-wide sm:tracking-wider shrink-0">ACINONYX</span>
+            {mode === 'jokies' ? (
+              <span className="font-display text-lg md:text-xl font-bold tracking-[0.2em] text-text-main uppercase shrink-0">ACINONYX</span>
+            ) : (
+              <span className="text-text-main font-bold text-sm sm:text-base md:text-xl tracking-wide sm:tracking-wider shrink-0">
+                {view === 'dashboard' ? 'Dashboard' : view === 'etalase' ? 'Etalase' : view === 'notifications' ? 'Notifikasi' : view === 'account' ? 'Akun' : ''}
+              </span>
+            )}
             
             {mode === 'jokies' && (
               <div className="hidden md:flex items-center gap-1 sm:gap-2 md:gap-4 overflow-x-auto no-scrollbar flex-1 justify-center md:justify-start">
                 <TopNavItem 
-                  icon={<ShoppingBag />} 
+                  icon={null} 
                   label="Home" 
                   active={view === 'marketplace'} 
                   onClick={() => setView('marketplace')}
                 />
                 <TopNavItem 
-                  icon={<History />} 
+                  icon={null} 
                   label="Pesanan" 
                   active={view === 'orders'} 
                   onClick={() => setView('orders')}
                 />
-                <TopNavItem 
-                  icon={<Bell />} 
-                  label="Inbox" 
-                  active={view === 'notifications'} 
+                <TopNavItem
+                  icon={null}
+                  label="Inbox"
+                  active={view === 'notifications'}
                   onClick={() => setView('notifications')}
                   badge={unreadNotifications > 0 ? unreadNotifications : undefined}
                 />
-                <TopNavItem 
-                  icon={<Activity />} 
-                  label="Traits" 
-                  active={view === 'traits'} 
-                  onClick={() => setView('traits')}
-                />
-                <TopNavItem 
-                  icon={<UserCircle />} 
-                  label="Akun" 
-                  active={view === 'account'} 
-                  onClick={() => setView('account')}
+                <TopNavItem
+                  icon={null}
+                  label="Akun"
+                  active={view === 'account'}
+                  onClick={() => handleNavClick('account', 'profil')}
                 />
               </div>
             )}
@@ -766,7 +759,7 @@ export default function App() {
                 className="p-1.5 sm:p-2 text-text-main hover:bg-bg-card rounded-lg transition-colors flex items-center gap-1 sm:gap-2"
               >
                 <span className="hidden xs:inline text-xs font-semibold uppercase tracking-wide">Opsi</span>
-                {isSidebarOpen ? <X size={20} className="sm:size-6" /> : <Menu size={20} className="sm:size-6" />}
+                {isSidebarOpen ? <span className="text-sm sm:text-base font-bold">×</span> : <span className="text-sm sm:text-base font-bold">☰</span>}
               </button>
             )}
             {(isMobile || mode === 'jokies') && (
@@ -781,6 +774,38 @@ export default function App() {
             )}
           </div>
         </header>
+
+        {/* Sub-Navigation Toolbar */}
+        {((isMobile && mode === 'kijo') || (mode === 'jokies' && view === 'account')) && (
+          <div className="sticky top-16 z-[49] bg-bg-sidebar border-b border-border-main">
+            <div className="flex items-center gap-1 px-3 py-2 overflow-x-auto no-scrollbar">
+              {view === 'dashboard' && mode === 'kijo' && (
+                <>
+                  <button onClick={() => setSubView('statistik')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${subView === 'statistik' ? 'bg-orange-primary text-black' : 'text-text-muted hover:text-text-main'}`}>Statistik</button>
+                  <button onClick={() => setSubView('pesanan')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${subView === 'pesanan' ? 'bg-orange-primary text-black' : 'text-text-muted hover:text-text-main'}`}>Pesanan</button>
+                </>
+              )}
+              {view === 'etalase' && mode === 'kijo' && (
+                <>
+                  <button onClick={() => setSubView('operasional')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${subView === 'operasional' ? 'bg-orange-primary text-black' : 'text-text-muted hover:text-text-main'}`}>Waktu Operasional</button>
+                  <button onClick={() => setSubView('paket')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${subView === 'paket' ? 'bg-orange-primary text-black' : 'text-text-muted hover:text-text-main'}`}>Paket Saya</button>
+                  <button onClick={() => setSubView('pesan')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${subView === 'pesan' ? 'bg-orange-primary text-black' : 'text-text-muted hover:text-text-main'}`}>Pesan</button>
+                </>
+              )}
+              {view === 'account' && (
+                <>
+                  <button onClick={() => setSubView('profil')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${subView === 'profil' ? 'bg-orange-primary text-black' : 'text-text-muted hover:text-text-main'}`}>Profil</button>
+                  <button onClick={() => setSubView('penilaian')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${subView === 'penilaian' ? 'bg-orange-primary text-black' : 'text-text-muted hover:text-text-main'}`}>Penilaian</button>
+                  {user?.role === 'kijo' && (
+                    <button onClick={() => setSubView('pendapatan')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${subView === 'pendapatan' ? 'bg-orange-primary text-black' : 'text-text-muted hover:text-text-main'}`}>Pendapatan</button>
+                  )}
+                  <button onClick={() => setSubView('game-detail')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${subView === 'game-detail' ? 'bg-orange-primary text-black' : 'text-text-muted hover:text-text-main'}`}>Akun Game</button>
+                  <button onClick={() => setSubView('log')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${subView === 'log' ? 'bg-orange-primary text-black' : 'text-text-muted hover:text-text-main'}`}>Log</button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="p-4 sm:p-6 md:p-10">
           <GlobalAnnouncements announcements={announcements} />
@@ -809,185 +834,202 @@ export default function App() {
             <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 sm:gap-6 mb-8 sm:mb-10">
               <div>
                 <h1 className="text-xl sm:text-3xl font-bold text-text-main tracking-tight">
-                  Halo, <span className="text-orange-primary">{stats?.full_name || user.full_name}</span>!
+                  {subView === 'statistik' ? 'Statistik' : subView === 'pesanan' ? 'Pesanan' : 'Dashboard'}<span className="text-orange-primary">.</span>
                 </h1>
                 <p className="text-text-muted text-xs sm:text-sm mt-1">Selamat datang kembali di panel kendali Partner Anda.</p>
               </div>
-
-              <div className="flex items-center gap-4">
-                <div className="bg-bg-sidebar px-4 sm:px-5 py-2 sm:py-2.5 rounded-xl border border-border-main flex items-center gap-3">
-                  <div className="flex flex-col">
-                    <span className="text-xs sm:text-xs text-text-muted font-bold uppercase tracking-wider">Operasional</span>
-                    <span className="text-orange-primary font-mono font-bold text-xs sm:text-sm">
-                      {stats?.work_start || '08:00'} - {stats?.work_end || '22:00'}
-                    </span>
-                  </div>
-                  <Clock className="text-orange-primary/50" size={14} />
-                </div>
-              </div>
             </header>
 
-            {/* Stats Grid */}
-            <section className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
-              <StatCard 
-                label="Saldo Aktif" 
-                value={`Rp ${new Intl.NumberFormat('id-ID').format(stats?.balance_active || 0)}`} 
-              />
-              <StatCard 
-                label="Saldo Tertahan" 
-                value={`Rp ${new Intl.NumberFormat('id-ID').format(stats?.balance_held || 0)}`} 
-              />
-              <StatCard 
-                label="Status Ketersediaan" 
-                value={
-                  stats?.manual_status === 'offline' 
-                    ? 'Sedang Istirahat' 
-                    : ((stats?.active_orders ?? 0) >= (stats?.max_slots || 3))
-                      ? 'Sibuk (Slot Penuh)'
-                      : 'Tersedia'
-                }
-                status={
-                  stats?.manual_status === 'offline'
-                    ? 'busy'
-                    : ((stats?.active_orders ?? 0) >= (stats?.max_slots || 3))
-                      ? 'busy'
-                      : 'active'
-                } 
-              />
-            </section>
-
-            {/* Content Columns */}
-            <section className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-8 items-stretch">
-              {/* Upcoming */}
-              <div className="space-y-6 bg-bg-card/50 p-5 rounded-2xl border border-border-main/50 h-full">
-                <div className="flex items-center justify-between">
-                  <SectionHeader icon={<Calendar size={16} />} title="Sesi Mendatang" />
-                  <div className="flex gap-2">
-                    <button 
-                      disabled={pages.upcoming === 1}
-                      onClick={() => setPages(p => ({ ...p, upcoming: p.upcoming - 1 }))}
-                      className="p-1 text-text-muted hover:text-orange-primary disabled:opacity-30"
-                    >
-                      <ChevronLeft size={16} />
-                    </button>
-                    <button 
-                      disabled={pages.upcoming * 5 >= sessions.upcoming.length}
-                      onClick={() => setPages(p => ({ ...p, upcoming: p.upcoming + 1 }))}
-                      className="p-1 text-text-muted hover:text-orange-primary disabled:opacity-30"
-                    >
-                      <ChevronRight size={16} />
-                    </button>
+            {/* Sub-view: Statistik */}
+            {subView === 'statistik' && (
+              <div className="space-y-8">
+                {/* Ringkasan Pendapatan */}
+                <section>
+                  <SectionHeader icon={null} title="Ringkasan Pendapatan" />
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <StatCard 
+                      label="Saldo Aktif" 
+                      value={`Rp ${new Intl.NumberFormat('id-ID').format(stats?.balance_active || 0)}`} 
+                    />
+                    <StatCard 
+                      label="Saldo Tertahan" 
+                      value={`Rp ${new Intl.NumberFormat('id-ID').format(stats?.balance_held || 0)}`} 
+                    />
+                    <StatCard 
+                      label="Status Ketersediaan" 
+                      value={
+                        stats?.manual_status === 'offline' 
+                          ? 'Sedang Istirahat' 
+                          : ((stats?.active_orders ?? 0) >= (stats?.max_slots || 3))
+                            ? 'Sibuk (Slot Penuh)'
+                            : 'Tersedia'
+                      }
+                      status={
+                        stats?.manual_status === 'offline'
+                          ? 'busy'
+                          : ((stats?.active_orders ?? 0) >= (stats?.max_slots || 3))
+                            ? 'busy'
+                            : 'active'
+                      } 
+                    />
                   </div>
-                </div>
-                <div className="space-y-4">
-                  {sessions.upcoming.length > 0 ? sessions.upcoming.slice((pages.upcoming - 1) * 5, pages.upcoming * 5).map(session => (
-                    <OrderItem 
-                      key={session.id}
-                      title={session.title} 
-                      user={session.customer_name} 
-                      price={`Rp ${new Intl.NumberFormat('id-ID').format(session.price)}`} 
-                      time={session.scheduled_at} 
-                      hoverEffect
-                      onClick={() => setSelectedSession(session)}
-                      onStart={() => setOrderActionModal({ type: 'start', order: session })}
-                    />
-                  )) : <p className="text-gray-600 text-xs italic">Tidak ada sesi mendatang</p>}
-                </div>
-              </div>
+                </section>
 
-              {/* Ongoing */}
-              <div className="space-y-6 bg-bg-card/50 p-5 rounded-2xl border border-border-main/50 h-full">
-                <SectionHeader icon={<Activity size={16} />} title="Sedang Berjalan" />
-                <div className="space-y-4">
-                  {sessions.ongoing.length > 0 ? sessions.ongoing.map(session => (
-                    <OrderItem
-                      key={session.id}
-                      title={session.title}
-                      user={session.customer_name}
-                      price={`Rp ${new Intl.NumberFormat('id-ID').format(session.price)}`}
-                      time={session.scheduled_at}
-                      active
-                      onClick={() => setSelectedSession(session)}
-                      details={{
-                        id: session.id,
-                        kijoId: user?.id ?? 0,
-                        jokiesId: session.jokies_id ?? 0,
-                        duration: session.duration ?? 0,
-                        startTime: session.started_at ?? session.scheduled_at,
-                        hasProofs: !!(session.screenshot_start && session.screenshot_end)
-                      }}
-                      onFinish={session.status === 'ongoing' ? () => setOrderActionModal({ type: 'finish', order: session }) : undefined}
-                      onCancel={session.status === 'ongoing' ? () => setOrderActionModal({ type: 'cancel', order: session }) : undefined}
-                    />
-                  )) : <p className="text-gray-600 text-xs italic">Tidak ada sesi berjalan</p>}
-                </div>
-              </div>
-
-              {/* History */}
-              <div className="lg:col-span-2 xl:col-span-1 space-y-6 bg-bg-card/50 p-5 rounded-2xl border border-border-main/50 h-full">
-                <div className="flex items-center justify-between">
-                  <SectionHeader icon={<History size={16} />} title="History" />
-                  <div className="flex items-center gap-2">
-                    <select 
-                      value={historySort}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (['3months', '6months', '1year'].includes(val)) {
-                          setShowFullHistory(true);
-                          // Reset to 'all' so it acts as a trigger
-                          setHistorySort('all');
-                        } else {
-                          setHistorySort(val);
-                        }
-                      }}
-                      className="bg-bg-sidebar border border-border-main text-xs font-bold uppercase px-2 py-1 rounded-lg focus:outline-none focus:border-orange-primary"
-                    >
-                      <option value="all">Semua</option>
-                      <option value="week">1 Minggu</option>
-                      <option value="month">1 Bulan</option>
-                      <option disabled className="text-text-muted">--- Lebih Lama ---</option>
-                      <option value="3months">3 Bulan +</option>
-                      <option value="6months">6 Bulan +</option>
-                      <option value="1year">1 Tahun +</option>
-                    </select>
-                    <div className="flex gap-1">
-                      <button 
-                        disabled={pages.history === 1}
-                        onClick={() => setPages(p => ({ ...p, history: p.history - 1 }))}
-                        className="p-1 text-text-muted hover:text-orange-primary disabled:opacity-30"
-                      >
-                        <ChevronLeft size={16} />
-                      </button>
-                      <button 
-                        disabled={pages.history * 5 >= sessions.history.length}
-                        onClick={() => setPages(p => ({ ...p, history: p.history + 1 }))}
-                        className="p-1 text-text-muted hover:text-orange-primary disabled:opacity-30"
-                      >
-                        <ChevronRight size={16} />
-                      </button>
+                {/* Performa Joki */}
+                <section>
+                  <SectionHeader icon={null} title="Performa Joki" />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="bg-bg-card border border-border-main rounded-xl p-5">
+                      <p className="text-xs text-text-muted font-medium uppercase tracking-wide mb-2">Pesanan Aktif</p>
+                      <h3 className="text-2xl font-bold text-text-main">{stats?.active_orders || 0}</h3>
+                    </div>
+                    <div className="bg-bg-card border border-border-main rounded-xl p-5">
+                      <p className="text-xs text-text-muted font-medium uppercase tracking-wide mb-2">Slot Tersedia</p>
+                      <h3 className="text-2xl font-bold text-emerald-400">{Math.max(0, (stats?.max_slots || 3) - (stats?.active_orders || 0))}/{stats?.max_slots || 3}</h3>
+                    </div>
+                    <div className="bg-bg-card border border-border-main rounded-xl p-5">
+                      <p className="text-xs text-text-muted font-medium uppercase tracking-wide mb-2">Sesi Selesai</p>
+                      <h3 className="text-2xl font-bold text-text-main">{sessions.history.filter(s => s.status === 'completed').length}</h3>
+                    </div>
+                    <div className="bg-bg-card border border-border-main rounded-xl p-5">
+                      <p className="text-xs text-text-muted font-medium uppercase tracking-wide mb-2">Total Dibatalkan</p>
+                      <h3 className="text-2xl font-bold text-red-400">{sessions.history.filter(s => s.status === 'cancelled').length}</h3>
                     </div>
                   </div>
+                </section>
+
+                {/* Grafik Bulanan (Placeholder) */}
+                <section>
+                  <SectionHeader icon={null} title="Grafik Bulanan" />
+                  <div className="bg-bg-card border border-border-main rounded-xl p-8">
+                    <div className="grid grid-cols-6 md:grid-cols-12 gap-2 items-end h-40">
+                      {Array.from({ length: 12 }, (_, i) => {
+                        const monthSessions = sessions.history.filter(s => {
+                          const d = new Date(s.scheduled_at);
+                          return d.getMonth() === i && d.getFullYear() === new Date().getFullYear();
+                        });
+                        const maxH = Math.max(1, sessions.history.length || 1);
+                        const h = Math.max(8, (monthSessions.length / maxH) * 100);
+                        return (
+                          <div key={i} className="flex flex-col items-center gap-1">
+                            <div 
+                              className="w-full bg-orange-primary/20 rounded-t-md hover:bg-orange-primary/40 transition-colors relative group"
+                              style={{ height: `${h}%` }}
+                            >
+                              <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-bg-elevated text-text-main text-[10px] font-bold px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                                {monthSessions.length}
+                              </div>
+                            </div>
+                            <span className="text-[10px] text-text-faint font-medium">
+                              {['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'][i]}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {/* Sub-view: Pesanan */}
+            {subView === 'pesanan' && (
+              <div className="space-y-6">
+                {/* Order Status Tabs */}
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-2">
+                  {([
+                    { key: 'upcoming', label: 'Sesi Mendatang', count: sessions.upcoming.length },
+                    { key: 'ongoing', label: 'Sedang Berjalan', count: sessions.ongoing.length },
+                    { key: 'completed', label: 'Selesai', count: sessions.history.filter(s => s.status === 'completed').length },
+                    { key: 'cancelled', label: 'Dibatalkan', count: [...sessions.ongoing.filter(s => s.status === 'pending_cancellation'), ...sessions.history.filter(s => s.status === 'cancelled')].length },
+                  ] as { key: typeof dashOrderTab, label: string, count: number }[]).map(tab => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setDashOrderTab(tab.key)}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wide whitespace-nowrap transition-all flex items-center gap-2 ${
+                        dashOrderTab === tab.key
+                          ? 'bg-orange-primary text-black shadow-lg shadow-orange-primary/20'
+                          : 'bg-bg-card border border-border-main text-text-muted hover:text-text-main hover:border-orange-primary/30'
+                      }`}
+                    >
+                      {tab.label}
+                      {tab.count > 0 && (
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${dashOrderTab === tab.key ? 'bg-black/20 text-black' : 'bg-orange-primary/10 text-orange-primary'}`}>
+                          {tab.count}
+                        </span>
+                      )}
+                    </button>
+                  ))}
                 </div>
-                <div className="space-y-4">
-                  {sessions.history.length > 0 ? sessions.history.slice((pages.history - 1) * 5, pages.history * 5).map(session => (
-                    <OrderItem 
-                      key={session.id}
-                      title={session.title} 
-                      user={session.customer_name} 
-                      price={`Rp ${new Intl.NumberFormat('id-ID').format(session.total_price || session.price)}`} 
-                      time={session.scheduled_at} 
-                      completed
-                      hoverEffect
-                      onClick={() => setSelectedSession(session)}
-                      onRate={() => {
-                        setRatingJokiesSession(session);
-                        setSelectedJokiesTags([]);
-                      }}
-                    />
-                  )) : <p className="text-gray-600 text-xs italic">Belum ada history</p>}
+
+                {/* Order Table */}
+                <div className="bg-bg-card border border-border-main rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-border-main bg-bg-elevated/50">
+                          <th className="text-left text-[11px] font-bold uppercase tracking-widest text-text-muted px-5 py-3">ID</th>
+                          <th className="text-left text-[11px] font-bold uppercase tracking-widest text-text-muted px-5 py-3">Paket</th>
+                          <th className="text-left text-[11px] font-bold uppercase tracking-widest text-text-muted px-5 py-3">Pelanggan</th>
+                          <th className="text-left text-[11px] font-bold uppercase tracking-widest text-text-muted px-5 py-3">Jadwal</th>
+                          <th className="text-right text-[11px] font-bold uppercase tracking-widest text-text-muted px-5 py-3">Harga</th>
+                          <th className="text-center text-[11px] font-bold uppercase tracking-widest text-text-muted px-5 py-3">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          let items: Session[] = [];
+                          if (dashOrderTab === 'upcoming') items = sessions.upcoming;
+                          else if (dashOrderTab === 'ongoing') items = sessions.ongoing;
+                          else if (dashOrderTab === 'completed') items = sessions.history.filter(s => s.status === 'completed');
+                          else if (dashOrderTab === 'cancelled') items = [
+                            ...sessions.ongoing.filter(s => s.status === 'pending_cancellation'),
+                            ...sessions.history.filter(s => s.status === 'cancelled')
+                          ];
+
+                          if (items.length === 0) {
+                            return (
+                              <tr>
+                                <td colSpan={6} className="text-center py-16 text-text-muted text-xs italic">
+                                  Tidak ada pesanan di kategori ini
+                                </td>
+                              </tr>
+                            );
+                          }
+
+                          return items.map(session => (
+                            <tr 
+                              key={session.id} 
+                              className="border-b border-border-main/50 hover:bg-bg-elevated/30 cursor-pointer transition-colors"
+                              onClick={() => setSelectedSession(session)}
+                            >
+                              <td className="px-5 py-4 text-xs font-mono text-text-faint">#{session.id}</td>
+                              <td className="px-5 py-4">
+                                <p className="text-sm font-semibold text-text-main">{session.title}</p>
+                              </td>
+                              <td className="px-5 py-4 text-sm text-text-muted">{session.customer_name}</td>
+                              <td className="px-5 py-4 text-xs text-text-muted">
+                                {new Date(session.scheduled_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                <br />
+                                <span className="text-text-faint">{new Date(session.scheduled_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</span>
+                              </td>
+                              <td className="px-5 py-4 text-right text-sm font-bold text-orange-primary font-mono">
+                                Rp {new Intl.NumberFormat('id-ID').format(session.total_price || session.price)}
+                              </td>
+                              <td className="px-5 py-4 text-center">
+                                <span className={`text-[11px] font-bold px-2.5 py-1 rounded-lg uppercase tracking-widest ${statusColor(session.status)}`}>
+                                  {statusLabel(session.status)}
+                                </span>
+                              </td>
+                            </tr>
+                          ));
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
-            </section>
+            )}
           </>
           )}
           </div>
@@ -1010,7 +1052,6 @@ export default function App() {
                   <p className="text-sm font-bold text-text-main">{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
                 </div>
                 <div className="w-12 h-12 bg-bg-sidebar border border-border-main rounded-2xl flex items-center justify-center text-text-muted">
-                  <Clock size={20} />
                 </div>
               </div>
             </header>
@@ -1019,9 +1060,7 @@ export default function App() {
               <div className="bg-bg-sidebar border border-border-main rounded-2xl p-6 space-y-4 shadow-sm group hover:border-orange-primary/30 transition-all">
                 <div className="flex items-center justify-between">
                   <div className="w-10 h-10 bg-orange-primary/10 rounded-xl flex items-center justify-center text-orange-primary border border-orange-primary/20">
-                    <Wallet size={20} />
                   </div>
-                  <TrendingUp size={16} className="text-green-500 opacity-0 group-hover:opacity-100 transition-opacity" />
                 </div>
                 <div>
                   <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Saldo Wallet</p>
@@ -1034,9 +1073,7 @@ export default function App() {
               <div className="bg-bg-sidebar border border-border-main rounded-2xl p-6 space-y-4 shadow-sm group hover:border-orange-primary/30 transition-all">
                 <div className="flex items-center justify-between">
                   <div className="w-10 h-10 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500 border border-blue-500/20">
-                    <Package size={20} />
                   </div>
-                  <ArrowRight size={16} className="text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" />
                 </div>
                 <div>
                   <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Total Pesanan</p>
@@ -1049,7 +1086,6 @@ export default function App() {
               <div className="bg-bg-sidebar border border-border-main rounded-2xl p-6 space-y-4 shadow-sm group hover:border-orange-primary/30 transition-all">
                 <div className="flex items-center justify-between">
                   <div className={`w-10 h-10 ${user.is_suspended ? 'bg-red-500/10 text-red-500 border-red-500/20' : 'bg-green-500/10 text-green-500 border-green-500/20'} rounded-xl flex items-center justify-center border`}>
-                    <ShieldCheck size={20} />
                   </div>
                 </div>
                 <div>
@@ -1063,9 +1099,7 @@ export default function App() {
               <div className="bg-orange-primary rounded-2xl p-6 space-y-4 shadow-xl shadow-orange-primary/20 group hover:scale-[1.02] transition-all cursor-pointer" onClick={() => setView('marketplace')}>
                 <div className="flex items-center justify-between">
                   <div className="w-10 h-10 bg-black/10 rounded-xl flex items-center justify-center text-black">
-                    <Zap size={20} />
                   </div>
-                  <ArrowRight size={16} className="text-black" />
                 </div>
                 <div>
                   <p className="text-xs font-bold text-black/60 uppercase tracking-widest">Mulai Mabar</p>
@@ -1079,14 +1113,13 @@ export default function App() {
               <div className="lg:col-span-2 bg-bg-sidebar border border-border-main rounded-2xl p-6 sm:p-10 space-y-8 shadow-sm">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <History className="text-orange-primary" size={24} />
                     <h3 className="text-xl sm:text-2xl font-bold text-text-main uppercase tracking-tight">History <span className="text-orange-primary">Pesanan.</span></h3>
                   </div>
                   <button 
                     onClick={() => setView('orders')} 
                     className="flex items-center gap-2 text-xs font-bold text-text-muted uppercase tracking-widest hover:text-orange-primary transition-colors group"
                   >
-                    Lihat Semua <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
+                    Lihat Semua
                   </button>
                 </div>
                 
@@ -1094,7 +1127,6 @@ export default function App() {
                   {sessions.history.length === 0 && sessions.upcoming.length === 0 && sessions.ongoing.length === 0 ? (
                     <div className="col-span-full py-20 text-center border border-dashed border-border-main rounded-2xl bg-bg-main/30">
                       <div className="w-16 h-16 bg-bg-sidebar rounded-full flex items-center justify-center mx-auto mb-4 border border-border-main">
-                        <Package size={32} className="text-text-muted opacity-20" />
                       </div>
                       <p className="text-text-muted text-sm font-medium italic">Belum ada riwayat pesanan.</p>
                       <button 
@@ -1114,7 +1146,6 @@ export default function App() {
                         <div className="flex items-start justify-between">
                           <div className="flex items-center gap-4">
                             <div className="w-12 h-12 bg-bg-sidebar rounded-2xl flex items-center justify-center text-text-muted border border-border-main group-hover:border-orange-primary/20 group-hover:text-orange-primary transition-all">
-                              <Gamepad2 size={24} />
                             </div>
                             <div>
                               <h4 className="text-sm font-bold text-text-main leading-tight group-hover:text-orange-primary transition-colors">{session.title}</h4>
@@ -1152,10 +1183,8 @@ export default function App() {
               <div className="space-y-6 sm:space-y-8">
                 <div className="bg-bg-sidebar border border-border-main rounded-2xl p-8 sm:p-10 flex flex-col items-center justify-center text-center gap-8 shadow-sm relative overflow-hidden group">
                   <div className="absolute top-0 right-0 p-8 opacity-[0.03] group-hover:scale-110 transition-transform duration-700">
-                    <Zap size={120} />
                   </div>
                   <div className="w-24 h-24 bg-orange-primary/10 rounded-full flex items-center justify-center text-orange-primary shrink-0 border border-orange-primary/20 relative z-10">
-                    <Trophy size={48} />
                   </div>
                   <div className="relative z-10">
                     <h3 className="text-xl sm:text-2xl font-bold text-text-main mb-3 leading-tight">Siap Naik <span className="text-orange-primary">Rank?</span></h3>
@@ -1203,7 +1232,7 @@ export default function App() {
               <div className="flex items-center justify-between mb-8">
                 <h3 className="text-3xl font-bold text-text-main tracking-tighter uppercase">Detail <span className="text-orange-primary">History Pesanan.</span></h3>
                 <button onClick={() => setShowFullHistory(false)} className="p-2 text-text-muted hover:text-orange-primary transition-colors">
-                  <X size={24} />
+                  ×
                 </button>
               </div>
               
@@ -1234,7 +1263,7 @@ export default function App() {
           </div>
         )}
 
-        {view === 'etalase' && <EtalasePage user={stats || user} onRefreshStats={() => {
+        {view === 'etalase' && <EtalasePage user={stats || user} subView={subView} onSubViewChange={setSubView} onRefreshStats={() => {
           // Trigger the fetchData function defined in the useEffect or make it accessible
       // Dispatch event to refresh stats globally
       try {
@@ -1251,7 +1280,7 @@ export default function App() {
         {view === 'orders' && <OrdersPage user={user} globalGames={globalGames} onGoToMarketplace={() => setView('marketplace')} />}
 
 
-        {view === 'notifications' && <NotificationPage user={user} onBadgeUpdate={(count) => setUnreadNotifications(count)} />}
+        {view === 'notifications' && <NotificationPage user={user} subView={subView} onBadgeUpdate={(count) => setUnreadNotifications(count)} />}
 
         {view === 'traits' && <TraitsPage user={user} mode={mode} />}
 
@@ -1271,6 +1300,8 @@ export default function App() {
               onLogout={handleLogout} 
               onStartVerification={() => setShowVerification(true)}
               setView={setView}
+              subView={subView}
+              onSubViewChange={setSubView}
             />
           )
         )}
@@ -1300,7 +1331,7 @@ export default function App() {
                     ? 'Konfirmasi penyelesaian pesanan. Pelanggan akan diminta untuk juga menekan tombol selesai.'
                     : orderActionModal.type === 'start'
                       ? 'Konfirmasi untuk memulai sesi pengerjaan sekarang.'
-                      : 'Berikan alasan pembatalan yang jelas untuk pelanggan.'}
+                      : 'Pembatalan memerlukan persetujuan pelanggan (Jokies). Jika disetujui, pelanggan akan mendapat refund penuh. Berikan alasan yang jelas.'}
                 </p>
 
                 {orderActionModal.type === 'cancel' && (
@@ -1364,7 +1395,7 @@ export default function App() {
                 <div className="flex items-center justify-between mb-6">
                   <h3 className="text-2xl font-bold text-text-main tracking-tighter uppercase">Beri Badge <span className="text-orange-primary">Jokies.</span></h3>
                   <button onClick={() => setRatingJokiesSession(null)} className="p-2 text-text-muted hover:text-orange-primary transition-colors">
-                    <X size={24} />
+                    ×
                   </button>
                 </div>
 
@@ -1387,7 +1418,6 @@ export default function App() {
                           : 'bg-bg-main border-border-main text-text-muted hover:border-text-muted/50'
                       }`}
                     >
-                      {React.cloneElement(tag.icon as React.ReactElement<{ size?: number }>, { size: 18 })}
                       {tag.name}
                     </button>
                   ))}
@@ -1423,7 +1453,6 @@ export default function App() {
         {view !== 'dashboard' && view !== 'etalase' && view !== 'notifications' && view !== 'traits' && view !== 'account' && view !== 'marketplace' && view !== 'orders' && view !== 'kijo-store' && (
           <div className="flex flex-col items-center justify-center h-[60vh] text-center">
             <div className="w-20 h-20 bg-bg-sidebar rounded-full flex items-center justify-center mb-6 border border-border-main">
-              <Settings className="text-text-muted" size={32} />
             </div>
             <h2 className="text-text-main font-bold text-xl mb-2">Halaman Sedang Dikembangkan</h2>
             <p className="text-text-muted text-sm max-w-xs">Fitur {view} akan segera hadir untuk melengkapi pengalaman Acinonyx Anda.</p>
@@ -1454,7 +1483,6 @@ function GlobalAnnouncements({ announcements }: { announcements: any[] }) {
         >
           <div className="flex items-start gap-4">
             <div className="mt-1">
-              <Bell size={20} />
             </div>
             <div>
               <h4 className="text-sm font-bold uppercase tracking-tight mb-1">{a.title}</h4>
@@ -1472,6 +1500,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
   const [isUploadingProof, setIsUploadingProof] = useState(false);
   const [isAgreeingCancel, setIsAgreeingCancel] = useState(false);
   const [isRejectingCancel, setIsRejectingCancel] = useState(false);
+  const [isRevertingCancel, setIsRevertingCancel] = useState(false);
   const session = selectedSession;
   const isActive = ['ongoing', 'pending_completion', 'pending_cancellation'].includes(session.status);
 
@@ -1559,6 +1588,26 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
     finally { setIsRejectingCancel(false); }
   };
 
+  const handleRevertCancel = async () => {
+    setIsRevertingCancel(true);
+    try {
+      const res = await fetchWithAuth('/api/orders/revert-cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: session.id })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showAlert(data.message || 'Pembatalan berhasil dibatalkan.', 'success');
+        onBack();
+        fetchData();
+      } else {
+        showAlert(data.message || 'Gagal membatalkan permintaan pembatalan', 'error');
+      }
+    } catch { showAlert('Terjadi kesalahan', 'error'); }
+    finally { setIsRevertingCancel(false); }
+  };
+
   const handleFileUpload = (setter: (v: string | null) => void) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -1579,7 +1628,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
 
   const handleUploadProof = async () => {
     if (!proofBeforeData && !proofAfterData) {
-      showAlert('Pilih minimal satu foto bukti', 'warning');
+      showAlert('Pilih minimal satu foto bukti untuk disimpan', 'warning');
       return;
     }
     setIsUploadingProof(true);
@@ -1594,10 +1643,10 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
         })
       });
       if (res.ok) {
-        showAlert('Bukti pengerjaan berhasil diunggah!', 'success');
+        showAlert('Bukti pengerjaan berhasil disimpan!', 'success');
         setProofBeforeData(null);
         setProofAfterData(null);
-        fetchData();
+        await fetchData();
       } else {
         const data = await res.json();
         showAlert(data.message || 'Gagal mengunggah bukti', 'error');
@@ -1627,7 +1676,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
       <div className="fixed inset-0 z-[120] bg-bg-main flex flex-col">
         <div className="p-4 border-b border-border-main bg-bg-sidebar flex items-center gap-3">
           <button onClick={() => setShowMobileChat(false)} className="p-2 text-text-muted hover:text-orange-primary">
-            <ChevronLeft size={20} />
+            ×
           </button>
           <div>
             <h3 className="text-sm font-bold text-text-main">Chat Pesanan #{session.id}</h3>
@@ -1649,7 +1698,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
   return (
     <div className="space-y-6 pb-20">
       <button onClick={onBack} className="flex items-center gap-2 text-text-muted hover:text-orange-primary transition-colors font-bold uppercase text-xs tracking-widest">
-        <ChevronLeft size={16} /> Kembali ke Dashboard
+        Kembali ke Dashboard
       </button>
 
       <div className="bg-bg-sidebar border border-border-main rounded-2xl overflow-hidden shadow-xl">
@@ -1681,7 +1730,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
             {/* Detail Pemesanan */}
             <div className="bg-bg-main/50 p-5 md:p-6 rounded-2xl border border-border-main">
               <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
-                <Calendar size={14} /> Detail Pemesanan
+                Detail Pemesanan
               </h3>
               <div className="grid grid-cols-2 gap-y-4">
                 <div>
@@ -1704,7 +1753,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
             {/* Rincian Pembayaran */}
             <div className="bg-bg-main/50 p-5 md:p-6 rounded-2xl border border-border-main">
               <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
-                <Wallet size={14} /> Rincian Pembayaran
+                Rincian Pembayaran
               </h3>
               <div className="space-y-2">
                 <div className="flex justify-between text-sm">
@@ -1713,7 +1762,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
                 </div>
                 <div className="flex justify-between pt-2 border-t border-border-main">
                   <span className="font-bold text-text-main uppercase text-xs">Total Pendapatan</span>
-                  <span className="font-bold text-orange-primary">Rp {(session.total_price || session.price).toLocaleString()}</span>
+                  <span className="font-bold text-orange-primary">Rp {(session.price * (session.quantity || 1)).toLocaleString()}</span>
                 </div>
               </div>
             </div>
@@ -1722,7 +1771,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
                 <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-3 flex items-center gap-2">
-                  <UserIcon size={14} /> Detail Jokies
+                  Detail Jokies
                 </h3>
                 <div className="space-y-2">
                   <p className="text-sm font-bold text-text-main">{session.jokies_name || session.jokies_username || session.customer_name}</p>
@@ -1731,7 +1780,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
               </div>
               <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
                 <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-3 flex items-center gap-2">
-                  <Zap size={14} className="text-orange-primary" /> Detail Kijo
+                  Detail Kijo
                 </h3>
                 <div className="space-y-2">
                   <p className="text-sm font-bold text-text-main">{user.full_name || user.username}</p>
@@ -1744,7 +1793,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
             {(isActive || session.status === 'completed') && (
               <div className="bg-bg-main/50 p-5 rounded-2xl border border-border-main">
                 <h3 className="text-xs font-bold text-text-muted uppercase tracking-widest mb-4 flex items-center gap-2">
-                  <ImageIcon size={14} /> Bukti Pengerjaan
+                  Bukti Pengerjaan
                 </h3>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -1758,10 +1807,14 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
                               Ganti Foto
                             </button>
                           )}
+                          {proofBeforeData && isActive && (
+                            <button onClick={() => setProofBeforeData(null)} className="absolute top-1 right-1 z-10 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white shadow-md hover:bg-red-600 transition-colors">
+                              ×
+                            </button>
+                          )}
                         </>
                       ) : isActive ? (
                         <button onClick={() => handleFileUpload(setProofBeforeData)} className="w-full h-full flex flex-col items-center justify-center gap-1 hover:text-orange-primary transition-colors">
-                          <ImageIcon size={20} className="text-text-muted" />
                           <span className="text-[10px] text-text-muted font-bold uppercase">Unggah</span>
                         </button>
                       ) : (
@@ -1780,10 +1833,14 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
                               Ganti Foto
                             </button>
                           )}
+                          {proofAfterData && isActive && (
+                            <button onClick={() => setProofAfterData(null)} className="absolute top-1 right-1 z-10 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white shadow-md hover:bg-red-600 transition-colors">
+                              ×
+                            </button>
+                          )}
                         </>
                       ) : isActive ? (
                         <button onClick={() => handleFileUpload(setProofAfterData)} className="w-full h-full flex flex-col items-center justify-center gap-1 hover:text-orange-primary transition-colors">
-                          <ImageIcon size={20} className="text-text-muted" />
                           <span className="text-[10px] text-text-muted font-bold uppercase">Unggah</span>
                         </button>
                       ) : (
@@ -1793,11 +1850,17 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
                   </div>
                 </div>
                 {isActive && (proofBeforeData || proofAfterData) && (
-                  <button onClick={handleUploadProof} disabled={isUploadingProof}
-                    className="w-full mt-4 bg-orange-primary text-black font-bold py-3 rounded-xl text-xs uppercase tracking-widest shadow-lg shadow-orange-primary/10 disabled:opacity-50"
-                  >
-                    {isUploadingProof ? 'MENGUNGGAH...' : 'SIMPAN BUKTI PENGERJAAN'}
-                  </button>
+                  <div className="mt-4 space-y-2">
+                    {!(proofBeforeData && proofAfterData) && !
+                      ((proofBeforeData && session.screenshot_end) || (proofAfterData && session.screenshot_start)) && (
+                      <p className="text-xs text-amber-400 text-center">Unggah kedua foto (sebelum & sesudah) untuk mengaktifkan tombol selesaikan pesanan.</p>
+                    )}
+                    <button onClick={handleUploadProof} disabled={isUploadingProof}
+                      className="w-full bg-orange-primary text-black font-bold py-3 rounded-xl text-xs uppercase tracking-widest shadow-lg shadow-orange-primary/10 disabled:opacity-50"
+                    >
+                      {isUploadingProof ? 'MENGUNGGAH...' : 'SIMPAN BUKTI PENGERJAAN'}
+                    </button>
+                  </div>
                 )}
               </div>
             )}
@@ -1839,10 +1902,10 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
                     }`}
                   >
                     {!actionState.canFinish && actionState.timerText
-                      ? `SELESAIKAN PESANAN (${actionState.timerText})`
+                      ? `AJUKAN PENYELESAIAN (${actionState.timerText})`
                       : !actionState.canFinish
-                        ? 'SELESAIKAN PESANAN (butuh bukti)'
-                        : 'SELESAIKAN PESANAN'}
+                        ? 'AJUKAN PENYELESAIAN (butuh bukti)'
+                        : 'AJUKAN PENYELESAIAN'}
                   </button>
                   {!actionState.canFinish && (
                     <p className="text-xs text-text-muted text-center">
@@ -1851,6 +1914,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
                         : `Tombol aktif ${actionState.timerText} lagi`}
                     </p>
                   )}
+                  <p className="text-xs text-text-muted text-center italic">Jokies (pembeli) yang akan mengonfirmasi penyelesaian dan mencairkan dana Anda.</p>
                   <button
                     disabled={!actionState.canCancel}
                     onClick={() => { if (actionState.canCancel) onCancel(session); }}
@@ -1865,10 +1929,13 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
                 </>
               )}
 
-              {/* Pending Completion: waiting for Jokies */}
+              {/* Pending Completion: waiting for Jokies to confirm */}
               {session.status === 'pending_completion' && (
-                <div className="w-full bg-blue-500/10 border border-blue-500/20 text-blue-400 font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
-                  MENUNGGU KONFIRMASI PELANGGAN
+                <div className="space-y-3">
+                  <div className="w-full bg-blue-500/10 border border-blue-500/20 text-blue-400 font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
+                    MENUNGGU KONFIRMASI PELANGGAN
+                  </div>
+                  <p className="text-xs text-text-muted text-center">Pengajuan penyelesaian telah dikirim. Jokies sedang memverifikasi hasil pengerjaan Anda.</p>
                 </div>
               )}
 
@@ -1880,13 +1947,26 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
                       SENGKETA — MENUNGGU KEPUTUSAN ADMIN
                     </div>
                   ) : session.cancelled_by === 'kijo' ? (
-                    <div className="w-full bg-orange-primary/10 border border-orange-primary/20 text-orange-primary font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
-                      MENUNGGU PERSETUJUAN PELANGGAN
+                    <div className="space-y-3">
+                      <div className="w-full bg-orange-primary/10 border border-orange-primary/20 text-orange-primary font-bold py-4 rounded-xl text-xs uppercase tracking-widest text-center">
+                        MENUNGGU PERSETUJUAN PELANGGAN
+                      </div>
+                      <button
+                        onClick={handleRevertCancel}
+                        disabled={isRevertingCancel}
+                        className="w-full border border-green-500/30 text-green-500 font-bold py-3 rounded-xl text-xs uppercase tracking-widest hover:bg-green-500/10 transition-all disabled:opacity-50"
+                      >
+                        {isRevertingCancel ? 'MEMPROSES...' : 'BATALKAN PERMINTAAN PEMBATALAN'}
+                      </button>
+                      <p className="text-xs text-text-faint text-center">Membatalkan permintaan pembatalan dan melanjutkan pesanan.</p>
                     </div>
                   ) : (
                     <>
                       <p className="text-xs text-text-muted text-center">
                         Pelanggan meminta pembatalan: <span className="text-text-main italic">"{session.cancellation_reason}"</span>
+                      </p>
+                      <p className="text-xs text-text-muted text-center">
+                        Jika disetujui, pelanggan mendapat refund sebagian (biaya admin tidak dikembalikan).
                       </p>
                       <button onClick={handleAgreeCancel} disabled={isAgreeingCancel}
                         className="w-full bg-red-500 text-white font-bold py-4 rounded-xl text-xs uppercase tracking-widest hover:bg-red-600 transition-all disabled:opacity-50"
@@ -1902,6 +1982,16 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
                   )}
                 </div>
               )}
+              <button
+                onClick={() => {
+                  const subject = encodeURIComponent(`Bantuan Pesanan #${session.id}`);
+                  const body = encodeURIComponent(`Order ID: #${session.id}\nPaket: ${session.title}\nStatus: ${session.status}\n\nKeterangan:\n[tuliskan masalah Anda di sini]`);
+                  window.open(`mailto:jokgen.acinonyx@gmail.com?subject=${subject}&body=${body}`);
+                }}
+                className="w-full border border-border-main bg-bg-sidebar text-text-muted hover:border-orange-primary/30 hover:text-orange-primary font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 text-xs uppercase tracking-widest"
+              >
+                EMAIL ADMIN "MINOX"
+              </button>
             </div>
           </div>
 
@@ -1920,7 +2010,7 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
                 <button onClick={() => setShowMobileChat(true)}
                   className="w-full bg-orange-primary text-black font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-orange-primary/10"
                 >
-                  <MessageSquare size={18} /> BUKA CHAT PESANAN
+                  BUKA CHAT PESANAN
                 </button>
               </div>
             </div>
@@ -1931,65 +2021,139 @@ function KijoOrderDetailView({ selectedSession, user, showMobileChat, setShowMob
   );
 }
 
-/** Floating indicator showing active order - like Gojek's floating ride widget */
-function FloatingOrderIndicator({ user, mode, view, selectedSession, selectedOrder, onNavigate }: any) {
-  const [activeSession, setActiveSession] = useState<any>(null);
-  const [visible, setVisible] = useState(false);
+/** Mobile Chat Popup Notification — slides up from bottom on mobile when there's an unread message */
+function MobileChatPopup({ user, mode, view, selectedSession, onOpenChat }: any) {
+  const [popups, setPopups] = useState<any[]>([]);
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
+  const socketRef = useRef<Socket | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    const check = () => setIsMobile(window.innerWidth < 1024);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
+  // Socket: listen for chat-notification events
+  useEffect(() => {
+    if (!user?.id) return;
+    const socket = io(window.location.origin, { transports: ['websocket', 'polling'] });
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      socket.emit('join-user-room', String(user.id));
+    });
+
+    socket.on('chat-notification', (data: any) => {
+      // Don't show if we're already viewing that order's chat
+      const isViewingThis = (mode === 'kijo' && view === 'dashboard' && selectedSession?.id === data.session_id)
+        || (mode === 'jokies' && view === 'orders');
+
+      if (!isViewingThis) {
+        setPopups(prev => {
+          // Replace if same session, otherwise add
+          const filtered = prev.filter(p => p.session_id !== data.session_id);
+          return [...filtered, { ...data, timestamp: Date.now() }];
+        });
+      }
+    });
+
+    return () => {
+      socket.emit('leave-user-room', String(user.id));
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [user?.id, mode, view, selectedSession?.id]);
+
+  // Auto-dismiss after 8 seconds
+  useEffect(() => {
+    if (popups.length === 0) return;
+    const timer = setInterval(() => {
+      const now = Date.now();
+      setPopups(prev => prev.filter(p => now - p.timestamp < 8000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [popups]);
+
+  // Also poll for unread chats periodically (fallback for when socket misses)
+  useEffect(() => {
+    if (!user?.id || !isMobile) return;
     const poll = async () => {
       try {
-        const res = await fetchWithAuth('/api/orders/active-session');
-        if (!res.ok || cancelled) return;
+        const res = await fetchWithAuth('/api/orders/unread-chats');
+        if (!res.ok) return;
         const data = await res.json();
-        if (data.hasActive) {
-          setActiveSession(data.session);
-        } else {
-          setActiveSession(null);
+        if (data.success && data.chats.length > 0) {
+          // Only show the most recent unread session that wasn't dismissed
+          const latest = data.chats[0];
+          if (!dismissed.has(latest.session_id)) {
+            setPopups(prev => {
+              if (prev.some(p => p.session_id === latest.session_id)) return prev;
+              return [...prev, {
+                session_id: latest.session_id,
+                sender_username: latest.sender_username,
+                sender_avatar: latest.sender_avatar,
+                sender_fullname: latest.sender_fullname,
+                message: latest.latest_message,
+                session_title: latest.session_title,
+                timestamp: Date.now()
+              }];
+            });
+          }
         }
       } catch { /* ignore */ }
     };
-
     poll();
-    const interval = setInterval(poll, 15000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+    const interval = setInterval(poll, 20000);
+    return () => clearInterval(interval);
+  }, [user?.id, isMobile, dismissed]);
 
-  useEffect(() => {
-    if (!activeSession) { setVisible(false); return; }
-    // Hide when already viewing the order details
-    const isViewingKijoOrder = mode === 'kijo' && view === 'dashboard' && selectedSession?.id === activeSession.id;
-    const isViewingJokiesOrder = mode === 'jokies' && view === 'orders' && selectedOrder?.id === activeSession.id;
-    setVisible(!isViewingKijoOrder && !isViewingJokiesOrder);
-  }, [activeSession, mode, view, selectedSession, selectedOrder]);
-
-  if (!visible || !activeSession) return null;
+  if (!isMobile || popups.length === 0) return null;
 
   return (
-    <motion.div
-      initial={{ y: 80, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      exit={{ y: 80, opacity: 0 }}
-      className="fixed bottom-20 md:bottom-6 right-4 md:right-8 z-[90]"
-    >
-      <button
-        onClick={() => onNavigate(activeSession)}
-        className="flex items-center gap-3 bg-orange-primary text-black pl-4 pr-5 py-3 rounded-2xl shadow-xl shadow-orange-primary/30 hover:scale-105 transition-all"
-      >
-        <div className="w-9 h-9 bg-black/10 rounded-xl flex items-center justify-center">
-          <Gamepad2 size={20} />
-        </div>
-        <div className="text-left">
-          <p className="text-xs font-bold truncate max-w-[140px]">{activeSession.title}</p>
-          <p className="text-[10px] font-semibold opacity-70">{statusLabel(activeSession.status)}</p>
-        </div>
-        {activeSession.unread_count > 0 && (
-          <span className="w-5 h-5 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-bounce">
-            {activeSession.unread_count > 9 ? '9+' : activeSession.unread_count}
-          </span>
-        )}
-      </button>
-    </motion.div>
+    <div className="fixed bottom-[72px] left-0 right-0 z-[80] px-2 space-y-2 pointer-events-none">
+      <AnimatePresence>
+        {popups.map((popup) => (
+          <motion.div
+            key={popup.session_id}
+            initial={{ y: 60, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 60, opacity: 0 }}
+            transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+            className="pointer-events-auto"
+          >
+            <button
+              onClick={() => {
+                setDismissed(prev => new Set(prev).add(popup.session_id));
+                setPopups(prev => prev.filter(p => p.session_id !== popup.session_id));
+                onOpenChat({ id: popup.session_id, title: popup.session_title });
+              }}
+              className="w-full bg-bg-sidebar border border-border-main rounded-xl px-4 py-3 flex items-center gap-3 shadow-xl shadow-black/20 hover:border-orange-primary/30 transition-all active:scale-[0.98]"
+            >
+              {/* Sender avatar */}
+              {popup.sender_avatar ? (
+                <img src={popup.sender_avatar} alt="" className="w-10 h-10 rounded-full object-cover border-2 border-orange-primary/30 shrink-0" />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-orange-primary/10 border-2 border-orange-primary/30 flex items-center justify-center text-orange-primary text-sm font-bold uppercase shrink-0">
+                  {(popup.sender_username || '?')[0]}
+                </div>
+              )}
+
+              {/* Message preview */}
+              <div className="flex-1 min-w-0 text-left">
+                <p className="text-xs font-bold text-text-main uppercase tracking-tight truncate">
+                  {popup.sender_username || popup.sender_fullname || 'Pesan Baru'}
+                </p>
+                <p className="text-[11px] text-text-muted truncate mt-0.5">{popup.message}</p>
+              </div>
+
+              {/* Orange accent dot */}
+              <div className="w-2.5 h-2.5 rounded-full bg-orange-primary shrink-0 animate-pulse" />
+            </button>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
   );
 }

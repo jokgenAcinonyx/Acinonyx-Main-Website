@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Package, Clock, DollarSign, Trash2, ChevronRight, LayoutGrid, Settings, Save, CheckCircle2, Calendar as CalendarIcon, Coffee, Users, Power, AlertCircle, Eye, EyeOff, Eraser, Archive, ArchiveRestore, ChevronDown, Gamepad2, Copy } from 'lucide-react';
+// lucide-react icons removed
 import { RANKS } from '../constants';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
 import { useAlert } from './AlertContext';
@@ -48,6 +48,8 @@ interface EtalasePageProps {
   user: any;
   onRefreshStats: () => void;
   globalGames: any[];
+  subView?: string;
+  onSubViewChange?: (sv: string) => void;
 }
 
 const DAYS = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
@@ -86,7 +88,7 @@ function PackageItem({ pkg, onEdit, onArchive, onDelete, overtimeWarning }: Pack
         <div className="flex items-center gap-3">
           <span className="text-orange-primary font-mono text-xs font-bold">Rp {pkg.price?.toLocaleString() || '0'}</span>
           <span className="text-text-muted text-xs flex items-center gap-1">
-            <Clock size={10} /> {pkg.duration >= 60 ? `${Math.floor(pkg.duration / 60)} Jam ${pkg.duration % 60 > 0 ? `${pkg.duration % 60} Menit` : ''}` : `${pkg.duration} Menit`}
+            {pkg.duration >= 60 ? `${Math.floor(pkg.duration / 60)} Jam ${pkg.duration % 60 > 0 ? `${pkg.duration % 60} Menit` : ''}` : `${pkg.duration} Menit`}
           </span>
         </div>
       </div>
@@ -96,21 +98,21 @@ function PackageItem({ pkg, onEdit, onArchive, onDelete, overtimeWarning }: Pack
           title="Edit Paket"
           className="text-text-muted hover:text-orange-primary transition-colors p-1"
         >
-          <Settings size={14} />
+          ⚙
         </button>
         <button 
           onClick={onArchive}
           title={pkg.archived === 1 ? 'Keluarkan dari Arsip' : 'Arsipkan Paket'}
           className="text-text-muted hover:text-orange-primary transition-colors p-1"
         >
-          {pkg.archived === 1 ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+          {pkg.archived === 1 ? '↩' : '↓'}
         </button>
         <button 
           onClick={onDelete}
           title="Hapus Paket"
           className="text-text-muted hover:text-red-500 transition-colors p-1"
         >
-          <Trash2 size={14} />
+          ×
         </button>
       </div>
       </div>
@@ -125,7 +127,7 @@ function PackageItem({ pkg, onEdit, onArchive, onDelete, overtimeWarning }: Pack
   );
 }
 
-export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) {
+export default function EtalasePage({ user, onRefreshStats, subView, onSubViewChange }: EtalasePageProps) {
   const { showAlert } = useAlert();
   const [categories, setCategories] = useState<CategoryData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -642,11 +644,14 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
 
   return (
     <div className="space-y-6 md:space-y-8 animate-in fade-in duration-500 px-4 md:px-0">
+      {/* Sub-view: Waktu Operasional */}
+      {(!subView || subView === 'operasional') && (
+      <>
       {/* Header Section */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl md:text-3xl font-bold text-text-main tracking-tight">Etalase <span className="text-orange-primary">Layanan.</span></h2>
-          <p className="text-text-muted text-xs md:text-sm mt-1">Kelola kategori, paket, dan ketersediaan joki Anda.</p>
+          <h2 className="text-2xl md:text-3xl font-bold text-text-main tracking-tight">Waktu <span className="text-orange-primary">Operasional.</span></h2>
+          <p className="text-text-muted text-xs md:text-sm mt-1">Kelola jadwal dan ketersediaan joki Anda.</p>
         </div>
         
         <div className="flex items-center gap-2 md:gap-3">
@@ -658,7 +663,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                 : 'bg-red-500/10 border-red-500/50 text-red-500 hover:bg-red-500/20'
             }`}
           >
-            <Power size={18} />
             <span className="hidden md:inline">{manualStatus === 'online' ? 'ON' : 'OFF'}</span>
             <span className="md:hidden text-xs">{manualStatus === 'online' ? 'ON' : 'OFF'}</span>
           </button>
@@ -683,339 +687,369 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                 : 'bg-orange-primary text-black hover:scale-105'
             }`}
           >
-            <Plus size={20} />
             <span className="hidden md:inline uppercase">Kategori Baru</span>
             <span className="md:hidden text-xs uppercase">Kategori</span>
           </button>
         </div>
       </div>
 
-      {/* Filters Bar */}
-      <div className="flex flex-col md:flex-row gap-4">
-        {/* Game Filter */}
-        {uniqueGames.length > 2 && (
-          <div className="flex items-center gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
-            <div className="flex items-center gap-2 bg-bg-sidebar p-1.5 rounded-2xl border border-border-main shadow-sm">
-                  {uniqueGames.map((game) => (
-                    <button
-                      key={game as string}
-                      onClick={() => setSelectedGameFilter(game as string)}
-                      className={`px-4 md:px-6 py-2 md:py-2.5 rounded-xl text-xs md:text-xs font-bold transition-all whitespace-nowrap border ${
-                        selectedGameFilter === game 
-                          ? 'bg-orange-primary border-orange-primary text-black shadow-lg shadow-orange-primary/20' 
-                          : 'bg-bg-main border-border-main text-text-muted hover:text-text-main hover:border-text-muted/30'
-                      }`}
-                    >
-                      {(game as string).toUpperCase()}
-                    </button>
-                  ))}
+      {/* Operasional Content - reorganized into boxes */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Box 1: Hari Aktif, Jam Aktif, Lama Pre-Order */}
+        <div className="bg-bg-sidebar border border-border-main rounded-2xl p-6 space-y-8">
+          {/* Weekly Schedule */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-text-main/70">
+              <span className="text-xs font-bold uppercase tracking-wider">Hari Aktif</span>
             </div>
-          </div>
-        )}
-
-        {/* Boosting Account Filter */}
-        {gameAccounts && Array.isArray(gameAccounts) && gameAccounts.filter(acc => acc.account_type === 'boosting' && acc.nickname !== 'New Kijo').length > 1 && (
-          <div className="flex items-center gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
-            <div className="flex items-center gap-2 bg-bg-sidebar p-1.5 rounded-2xl border border-border-main shadow-sm">
-              <button
-                onClick={() => setSelectedAccountFilter('Semua')}
-                className={`px-4 md:px-6 py-2 md:py-2.5 rounded-xl text-xs md:text-xs font-bold transition-all whitespace-nowrap border ${
-                  selectedAccountFilter === 'Semua'
-                    ? 'bg-orange-primary border-orange-primary text-black shadow-lg shadow-orange-primary/20'
-                    : 'bg-bg-main border-border-main text-text-muted hover:text-text-main hover:border-text-muted/30'
-                }`}
-              >
-                SEMUA AKUN
-              </button>
-              {gameAccounts && Array.isArray(gameAccounts) && gameAccounts.filter(acc => acc.account_type === 'boosting' && acc.nickname !== 'New Kijo').map((acc) => (
+            <div className="grid grid-cols-7 gap-1.5">
+              {DAYS.map(day => (
                 <button
-                  key={acc.id}
-                  onClick={() => setSelectedAccountFilter(acc.id)}
-                  className={`px-4 md:px-6 py-2 md:py-2.5 rounded-xl text-xs md:text-xs font-bold transition-all whitespace-nowrap border ${
-                    selectedAccountFilter === acc.id
-                      ? 'bg-orange-primary border-orange-primary text-black shadow-lg shadow-orange-primary/20'
-                      : 'bg-bg-main border-border-main text-text-muted hover:text-text-main hover:border-text-muted/30'
+                  key={day}
+                  onClick={() => toggleDay(day)}
+                  className={`px-1 py-2 rounded-lg text-[11px] font-bold transition-all border text-center ${
+                    operational.weekly_days.includes(day)
+                      ? 'bg-orange-primary border-orange-primary text-black'
+                      : 'bg-bg-main border-border-main text-text-muted hover:border-text-muted/50'
                   }`}
                 >
-                  {acc.nickname.toUpperCase()}
+                  {day.substring(0, 3)}
                 </button>
               ))}
             </div>
           </div>
-        )}
-      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-8">
-        {/* Left Column: Operational Management */}
-        <div className="space-y-6">
-          <div className="bg-bg-sidebar border border-border-main rounded-2xl overflow-hidden shadow-sm">
-            <button 
-              onClick={() => setIsOperationalOpen(!isOperationalOpen)}
-              className="w-full p-5 md:p-6 flex items-center justify-between hover:bg-bg-main transition-colors lg:cursor-default lg:hover:bg-transparent min-w-0"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <Settings className="text-orange-primary w-4 h-4 md:w-[18px] md:h-[18px] shrink-0" />
-                <h3 className="text-xs md:text-xs font-bold text-text-muted uppercase tracking-widest truncate">Pengaturan Operasional</h3>
-              </div>
-              <ChevronRight 
-                size={18} 
-                className={`text-text-muted transition-transform lg:hidden shrink-0 ${isOperationalOpen ? 'rotate-90' : ''}`} 
-              />
-            </button>
-            
-            <div className={`p-6 pt-0 space-y-8 lg:block ${isOperationalOpen ? 'block' : 'hidden'}`}>
-              {/* Weekly Schedule */}
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 text-text-main/70">
-                  <CalendarIcon size={14} />
-                  <span className="text-xs font-bold uppercase tracking-wider">Jadwal Mingguan</span>
-                </div>
-                <div className="grid grid-cols-7 gap-1.5">
-                  {DAYS.map(day => (
-                    <button
-                      key={day}
-                      onClick={() => toggleDay(day)}
-                      className={`px-1 py-2 rounded-lg text-[11px] font-bold transition-all border text-center ${
-                        operational.weekly_days.includes(day)
-                          ? 'bg-orange-primary border-orange-primary text-black'
-                          : 'bg-bg-main border-border-main text-text-muted hover:border-text-muted/50'
-                      }`}
-                    >
-                      {day.substring(0, 3)}
-                    </button>
-                  ))}
+          {/* Active Hours */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-text-main/70">
+              <span className="text-xs font-bold uppercase tracking-wider">Jam Aktif</span>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-text-muted uppercase tracking-wider ml-1">Mulai</label>
+                <div className="relative">
+                  <select 
+                    className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm appearance-none cursor-pointer font-bold"
+                    value={operational.work_start}
+                    onChange={(e) => setOperational({...operational, work_start: e.target.value})}
+                  >
+                    {TIME_OPTIONS.map(time => (
+                      <option key={time} value={time} className="bg-bg-sidebar text-text-main">{time}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
-
-            {/* Active Hours */}
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-text-main/70">
-                <Clock size={14} />
-                <span className="text-xs font-bold uppercase tracking-wider">Jam Aktif</span>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-text-muted uppercase tracking-wider ml-1">Mulai</label>
-                  <div className="relative">
-                    <select 
-                      className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm appearance-none cursor-pointer font-bold"
-                      value={operational.work_start}
-                      onChange={(e) => setOperational({...operational, work_start: e.target.value})}
-                    >
-                      {TIME_OPTIONS.map(time => (
-                        <option key={time} value={time} className="bg-bg-sidebar text-text-main">{time}</option>
-                      ))}
-                    </select>
-                    <ChevronDown size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-text-muted uppercase tracking-wider ml-1">Selesai</label>
-                  <div className="relative">
-                    <select 
-                      className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm appearance-none cursor-pointer font-bold"
-                      value={operational.work_end}
-                      onChange={(e) => setOperational({...operational, work_end: e.target.value})}
-                    >
-                      {TIME_OPTIONS.map(time => (
-                        <option key={time} value={time} className="bg-bg-sidebar text-text-main">{time}</option>
-                      ))}
-                    </select>
-                    <ChevronDown size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
-                  </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-text-muted uppercase tracking-wider ml-1">Selesai</label>
+                <div className="relative">
+                  <select 
+                    className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm appearance-none cursor-pointer font-bold"
+                    value={operational.work_end}
+                    onChange={(e) => setOperational({...operational, work_end: e.target.value})}
+                  >
+                    {TIME_OPTIONS.map(time => (
+                      <option key={time} value={time} className="bg-bg-sidebar text-text-main">{time}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>
+          </div>
 
-            {/* Jam Istirahat (Setelah Pesanan) */}
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-text-main/70">
-                <Coffee size={14} />
-                <span className="text-xs font-bold uppercase tracking-wider">Jam Istirahat (Setelah Pesanan)</span>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="relative flex-1">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="1"
-                    className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm font-bold pr-12"
-                    value={operational.break_time === 0 ? '' : operational.break_time}
-                    onFocus={(e) => e.target.select()}
-                    onChange={(e) => {
-                      const raw = e.target.value.replace(/[^0-9]/g, '');
-                      if (raw === '') {
-                        setOperational({...operational, break_time: 0});
-                        return;
-                      }
-                      const val = parseInt(raw, 10);
-                      if (val === 0) {
-                        showAlert('Jam istirahat tidak boleh 0!', 'warning');
-                        return;
-                      }
-                      setOperational({...operational, break_time: val});
-                    }}
-                    onBlur={() => {
-                      if (!operational.break_time || operational.break_time < 1) {
-                        setOperational({...operational, break_time: 1});
-                      }
-                    }}
-                  />
-                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-text-muted">JAM</span>
-                </div>
-              </div>
-              <p className="text-xs text-text-muted italic">Minimal 1 jam istirahat wajib setelah setiap pesanan selesai.</p>
+          {/* Pre-order Duration */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-text-main/70">
+              <span className="text-xs font-bold uppercase tracking-wider">Lama Pre-Order</span>
             </div>
-
-            {/* Slot Limit */}
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-text-main/70">
-                <Users size={14} />
-                <span className="text-xs font-bold uppercase tracking-wider">Batas Maksimal Pesanan</span>
-              </div>
-              <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4">
+              <div className="relative flex-1">
                 <input 
                   type="text" 
                   inputMode="numeric"
-                  max="10"
+                  max="7"
                   placeholder="0"
-                  className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm font-bold"
-                  value={operational.max_slots === 0 ? '' : operational.max_slots}
+                  className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm font-bold pr-12"
+                  value={operational.pre_order_days === 0 ? '' : operational.pre_order_days}
                   onFocus={(e) => e.target.select()}
                   onChange={(e) => {
                     let val = e.target.value === '' ? 0 : parseInt(e.target.value);
                     if (isNaN(val)) val = 0;
-                    if (val > 10) val = 10;
-                    setOperational({...operational, max_slots: val});
+                    if (val > 7) val = 7;
+                    setOperational({...operational, pre_order_days: val});
                   }}
                 />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-text-muted">HARI</span>
               </div>
-              <p className="text-xs text-text-muted italic">Set "0" untuk tanpa batas. Maksimal 10 slot.</p>
             </div>
-
-            {/* Pre-order Duration */}
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-text-main/70">
-                <CalendarIcon size={14} />
-                <span className="text-xs font-bold uppercase tracking-wider">Lama Pre-Order</span>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="relative flex-1">
-                  <input 
-                    type="text" 
-                    inputMode="numeric"
-                    max="7"
-                    placeholder="0"
-                    className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm font-bold pr-12"
-                    value={operational.pre_order_days === 0 ? '' : operational.pre_order_days}
-                    onFocus={(e) => e.target.select()}
-                    onChange={(e) => {
-                      let val = e.target.value === '' ? 0 : parseInt(e.target.value);
-                      if (isNaN(val)) val = 0;
-                      if (val > 7) val = 7;
-                      setOperational({...operational, pre_order_days: val});
-                    }}
-                  />
-                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-text-muted">HARI</span>
-                </div>
-              </div>
-              <p className="text-xs text-text-muted italic">Set "0" untuk pemesanan hari yang sama. Maksimal 7 hari.</p>
-            </div>
-
-            <button 
-              onClick={handleUpdateOperational}
-              disabled={saveStatus === 'saving'}
-              className={`w-full font-bold py-4 rounded-xl border transition-all flex items-center justify-center gap-2 text-xs ${
-                saveStatus === 'success' 
-                  ? 'bg-green-500/20 border-green-500 text-green-500' 
-                  : saveStatus === 'error'
-                  ? 'bg-red-500/20 border-red-500 text-red-500'
-                  : 'bg-orange-primary text-black border-orange-primary shadow-lg shadow-orange-primary/10'
-              }`}
-            >
-              {saveStatus === 'saving' ? (
-                <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-              ) : saveStatus === 'success' ? (
-                <>
-                  <CheckCircle2 size={16} />
-                  JADWAL TERUPDATE
-                </>
-              ) : (
-                <>
-                  <Save size={16} />
-                  SIMPAN PENGATURAN
-                </>
-              )}
-            </button>
-          </div>
-          </div>
-
-          {/* Waktu Libur */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-text-main/70">
-                <CalendarIcon size={14} />
-                <span className="text-xs font-bold uppercase tracking-wider">Waktu Libur</span>
-              </div>
-              <button
-                onClick={() => setShowAddHoliday(true)}
-                className="flex items-center gap-1.5 text-xs font-bold text-orange-primary hover:text-orange-primary/80 transition-all border border-orange-primary/30 rounded-lg px-3 py-1.5 hover:bg-orange-primary/5"
-              >
-                <Plus size={12} /> Tambah
-              </button>
-            </div>
-            {holidays.length === 0 ? (
-              <p className="text-xs text-text-muted italic px-1">Tidak ada jadwal libur.</p>
-            ) : (
-              <div className="space-y-2">
-                {holidays.map(h => (
-                  <div key={h.id} className="flex items-start justify-between gap-3 bg-bg-main border border-blue-500/20 rounded-xl px-3 py-2.5">
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-text-main truncate">{h.reason || 'Libur'}</p>
-                      <p className="text-xs text-text-muted mt-0.5">
-                        {new Date(h.start_date).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                        {h.end_date
-                          ? ` → ${new Date(h.end_date).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
-                          : ' → Sampai online'}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => handleDeleteHoliday(h.id)}
-                      className="text-text-muted hover:text-red-400 transition-colors shrink-0 mt-0.5"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="bg-orange-primary/5 border border-orange-primary/20 rounded-2xl p-6 relative overflow-hidden shadow-sm">
-            <div className="relative z-10">
-              <div className="flex items-center gap-2 mb-3">
-                <AlertCircle className="text-orange-primary" size={16} />
-                <h4 className="text-orange-primary font-bold text-sm">Sistem Peringatan</h4>
-              </div>
-              <ul className="space-y-2">
-                <li className="text-text-muted text-xs leading-relaxed flex gap-2">
-                  <div className="w-1 h-1 bg-orange-primary rounded-full mt-1.5 shrink-0" />
-                  Jokies akan mendapat peringatan jika memesan saat Anda Offline.
-                </li>
-                <li className="text-text-muted text-xs leading-relaxed flex gap-2">
-                  <div className="w-1 h-1 bg-orange-primary rounded-full mt-1.5 shrink-0" />
-                  Sistem otomatis menyembunyikan etalase jika slot penuh.
-                </li>
-              </ul>
-            </div>
-            <div className="absolute -bottom-4 -right-4 text-orange-primary/10">
-              <LayoutGrid size={80} />
-            </div>
+            <p className="text-xs text-text-muted italic">Set "0" untuk pemesanan hari yang sama. Maksimal 7 hari.</p>
           </div>
         </div>
 
-        {/* Right Column: Categories & Packages */}
-        <div className="lg:col-span-2 xl:col-span-2 space-y-6">
+        {/* Box 2: Jam Istirahat & Batas Maks Pesanan */}
+        <div className="bg-bg-sidebar border border-border-main rounded-2xl p-6 space-y-8">
+          {/* Jam Istirahat */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-text-main/70">
+              <span className="text-xs font-bold uppercase tracking-wider">Jam Istirahat (Setelah Pesanan)</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="1"
+                  className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm font-bold pr-12"
+                  value={operational.break_time === 0 ? '' : operational.break_time}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(/[^0-9]/g, '');
+                    if (raw === '') {
+                      setOperational({...operational, break_time: 0});
+                      return;
+                    }
+                    const val = parseInt(raw, 10);
+                    if (val === 0) {
+                      showAlert('Jam istirahat tidak boleh 0!', 'warning');
+                      return;
+                    }
+                    setOperational({...operational, break_time: val});
+                  }}
+                  onBlur={() => {
+                    if (!operational.break_time || operational.break_time < 1) {
+                      setOperational({...operational, break_time: 1});
+                    }
+                  }}
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-text-muted">JAM</span>
+              </div>
+            </div>
+            <p className="text-xs text-text-muted italic">Minimal 1 jam istirahat wajib setelah setiap pesanan selesai.</p>
+          </div>
+
+          {/* Slot Limit */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-text-main/70">
+              <span className="text-xs font-bold uppercase tracking-wider">Batas Maksimal Pesanan</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <input 
+                type="text" 
+                inputMode="numeric"
+                max="10"
+                placeholder="0"
+                className="w-full bg-bg-main border border-border-main rounded-xl py-2.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all text-sm font-bold"
+                value={operational.max_slots === 0 ? '' : operational.max_slots}
+                onFocus={(e) => e.target.select()}
+                onChange={(e) => {
+                  let val = e.target.value === '' ? 0 : parseInt(e.target.value);
+                  if (isNaN(val)) val = 0;
+                  if (val > 10) val = 10;
+                  setOperational({...operational, max_slots: val});
+                }}
+              />
+            </div>
+            <p className="text-xs text-text-muted italic">Set "0" untuk tanpa batas. Maksimal 10 slot.</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Box 3: Waktu Libur */}
+      <div className="bg-bg-sidebar border border-border-main rounded-2xl p-6 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-text-main/70">
+            <span className="text-xs font-bold uppercase tracking-wider">Waktu Libur</span>
+          </div>
+          <button
+            onClick={() => setShowAddHoliday(true)}
+            className="flex items-center gap-1.5 text-xs font-bold text-orange-primary hover:text-orange-primary/80 transition-all border border-orange-primary/30 rounded-lg px-3 py-1.5 hover:bg-orange-primary/5"
+          >
+            + Tambah
+          </button>
+        </div>
+        {holidays.length === 0 ? (
+          <p className="text-xs text-text-muted italic px-1">Tidak ada jadwal libur.</p>
+        ) : (
+          <div className="space-y-2">
+            {holidays.map(h => (
+              <div key={h.id} className="flex items-start justify-between gap-3 bg-bg-main border border-blue-500/20 rounded-xl px-3 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-text-main truncate">{h.reason || 'Libur'}</p>
+                  <p className="text-xs text-text-muted mt-0.5">
+                    {new Date(h.start_date).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    {h.end_date
+                      ? ` → ${new Date(h.end_date).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                      : ' → Sampai online'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleDeleteHoliday(h.id)}
+                  className="text-text-muted hover:text-red-400 transition-colors shrink-0 mt-0.5"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Save Button */}
+      <button 
+        onClick={handleUpdateOperational}
+        disabled={saveStatus === 'saving'}
+        className={`w-full font-bold py-4 rounded-xl border transition-all flex items-center justify-center gap-2 text-xs ${
+          saveStatus === 'success' 
+            ? 'bg-green-500/20 border-green-500 text-green-500' 
+            : saveStatus === 'error'
+            ? 'bg-red-500/20 border-red-500 text-red-500'
+            : 'bg-orange-primary text-black border-orange-primary shadow-lg shadow-orange-primary/10'
+        }`}
+      >
+        {saveStatus === 'saving' ? (
+          <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
+        ) : saveStatus === 'success' ? (
+          <>
+            JADWAL TERUPDATE
+          </>
+        ) : (
+          <>
+            SIMPAN PENGATURAN
+          </>
+        )}
+      </button>
+      </>
+      )}
+
+      {/* Sub-view: Paket Saya */}
+      {subView === 'paket' && (
+      <>
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl md:text-3xl font-bold text-text-main tracking-tight">Paket <span className="text-orange-primary">Saya.</span></h2>
+          <p className="text-text-muted text-xs md:text-sm mt-1">Kelola kategori dan paket layanan Anda.</p>
+        </div>
+        <button 
+          onClick={() => {
+            const realBoostingAccounts = gameAccounts && Array.isArray(gameAccounts) 
+              ? gameAccounts.filter(acc => acc.account_type === 'boosting' && acc.nickname !== 'New Kijo') 
+              : [];
+            const boostingCount = realBoostingAccounts.length;
+            if (boostingCount === 0) {
+              showAlert('ANDA HARUS MENDAFTARKAN AKUN BOOSTING TERLEBIH DAHULU DI MENU AKUN SEBELUM MEMBUAT KATEGORI!', 'warning');
+              return;
+            }
+            if (boostingCount === 1) {
+              setSelectedGameAccountId(realBoostingAccounts[0].id);
+            }
+            setShowAddCategory(true);
+          }}
+          className={`font-bold px-3 md:px-5 py-2.5 rounded-xl flex items-center gap-2 transition-all shadow-[0_0_20px_rgba(255,159,28,0.2)] ${
+            (gameAccounts && Array.isArray(gameAccounts) ? gameAccounts.filter(acc => acc.account_type === 'boosting' && acc.nickname !== 'New Kijo').length : 0) === 0
+              ? 'bg-text-muted/20 text-text-muted cursor-not-allowed grayscale'
+              : 'bg-orange-primary text-black hover:scale-105'
+          }`}
+        >
+          <span className="uppercase text-xs">Tambah Kategori</span>
+        </button>
+      </div>
+
+      {/* Game Filter */}
+      {uniqueGames.length > 2 && (
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
+          <div className="flex items-center gap-2 bg-bg-sidebar p-1.5 rounded-2xl border border-border-main shadow-sm">
+            {uniqueGames.map((game) => (
+              <button
+                key={game as string}
+                onClick={() => setSelectedGameFilter(game as string)}
+                className={`px-4 md:px-6 py-2 md:py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap border ${
+                  selectedGameFilter === game 
+                    ? 'bg-orange-primary border-orange-primary text-black shadow-lg shadow-orange-primary/20' 
+                    : 'bg-bg-main border-border-main text-text-muted hover:text-text-main hover:border-text-muted/30'
+                }`}
+              >
+                {(game as string).toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Boosting Account Filter */}
+      {gameAccounts && Array.isArray(gameAccounts) && gameAccounts.filter(acc => acc.account_type === 'boosting' && acc.nickname !== 'New Kijo').length > 1 && (
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
+          <div className="flex items-center gap-2 bg-bg-sidebar p-1.5 rounded-2xl border border-border-main shadow-sm">
+            <button
+              onClick={() => setSelectedAccountFilter('Semua')}
+              className={`px-4 md:px-6 py-2 md:py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap border ${
+                selectedAccountFilter === 'Semua'
+                  ? 'bg-orange-primary border-orange-primary text-black shadow-lg shadow-orange-primary/20'
+                  : 'bg-bg-main border-border-main text-text-muted hover:text-text-main hover:border-text-muted/30'
+              }`}
+            >
+              SEMUA AKUN
+            </button>
+            {gameAccounts.filter(acc => acc.account_type === 'boosting' && acc.nickname !== 'New Kijo').map((acc) => (
+              <button
+                key={acc.id}
+                onClick={() => setSelectedAccountFilter(acc.id)}
+                className={`px-4 md:px-6 py-2 md:py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap border ${
+                  selectedAccountFilter === acc.id
+                    ? 'bg-orange-primary border-orange-primary text-black shadow-lg shadow-orange-primary/20'
+                    : 'bg-bg-main border-border-main text-text-muted hover:text-text-main hover:border-text-muted/30'
+                }`}
+              >
+                {acc.nickname.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      </>
+      )}
+
+      {/* Sub-view: Pesan */}
+      {subView === 'pesan' && (
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-2xl md:text-3xl font-bold text-text-main tracking-tight">Pesan <span className="text-orange-primary">& Chat.</span></h2>
+          <p className="text-text-muted text-xs md:text-sm mt-1">Lihat statistik dan kelola pesan pesanan Anda.</p>
+        </div>
+
+        {/* Chat Statistics */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="bg-bg-sidebar border border-border-main rounded-2xl p-6">
+            <p className="text-xs text-text-muted font-bold uppercase tracking-widest mb-2">Chat Dibalas</p>
+            <p className="text-3xl font-bold text-text-main">—</p>
+            <p className="text-xs text-text-muted mt-1">Persentase chat yang Anda balas</p>
+          </div>
+          <div className="bg-bg-sidebar border border-border-main rounded-2xl p-6">
+            <p className="text-xs text-text-muted font-bold uppercase tracking-widest mb-2">Chat Terbalas</p>
+            <p className="text-3xl font-bold text-text-main">—</p>
+            <p className="text-xs text-text-muted mt-1">Persentase chat yang dibalas ke Anda</p>
+          </div>
+        </div>
+
+        {/* Chat List with tabs */}
+        <div className="bg-bg-sidebar border border-border-main rounded-2xl overflow-hidden">
+          <div className="p-4 border-b border-border-main">
+            <div className="flex items-center gap-2">
+              <button className="px-4 py-2 rounded-xl text-xs font-bold bg-orange-primary text-black">Chat Aktif</button>
+              <button className="px-4 py-2 rounded-xl text-xs font-bold text-text-muted hover:text-text-main">Chat Selesai</button>
+            </div>
+          </div>
+          <div className="divide-y divide-border-main">
+            <div className="p-12 text-center">
+              <p className="text-text-muted text-sm">Tidak ada chat aktif saat ini.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      )}
+
+      {/* Categories & Packages - only show when paket subView */}
+      {subView === 'paket' && (
+      <div className="space-y-6">
           {loading ? (
             <div className="flex items-center justify-center py-20">
               <div className="w-8 h-8 border-4 border-orange-primary border-t-transparent rounded-full animate-spin" />
@@ -1030,9 +1064,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                 if (finalFiltered.length === 0) {
                   return (
                     <div className="bg-bg-sidebar border border-dashed border-border-main rounded-2xl p-20 text-center shadow-sm">
-                      <div className="w-16 h-16 bg-bg-main rounded-full flex items-center justify-center mx-auto mb-6">
-                        <LayoutGrid className="text-text-muted" size={32} />
-                      </div>
                       <h3 className="text-text-main font-bold text-lg mb-2">Belum Ada Kategori</h3>
                       <p className="text-text-muted text-sm max-w-xs mx-auto mb-8">Mulai dengan membuat kategori layanan berdasarkan game (misal: Mobile Legends - Rank Push).</p>
                       <button 
@@ -1089,7 +1120,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                               {!account && accId && (
                                 <div className="flex flex-col gap-1.5 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-xl ml-2">
                                   <div className="flex items-center gap-2">
-                                    <AlertCircle size={14} className="text-red-400 shrink-0" />
                                     <span className="text-xs font-bold text-red-400 uppercase tracking-widest">
                                       Akun Boosting Dihapus — Kategori Tersembunyi dari Marketplace
                                     </span>
@@ -1101,7 +1131,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                               )}
                               {account && boostingCount > 1 && (
                                 <div className="flex items-center gap-2 px-4 py-2 bg-bg-sidebar/50 border border-border-main rounded-xl w-fit ml-2">
-                                  <Gamepad2 size={14} className="text-orange-primary" />
                                   <span className="text-xs font-bold text-text-main uppercase tracking-widest">
                                     Akun: {(() => {
                                       let nickname = account.nickname;
@@ -1159,7 +1188,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                             ? 'bg-orange-primary/10 border-orange-primary/20 text-orange-primary' 
                                             : 'bg-text-muted/10 border-text-muted/20 text-text-muted'
                                         }`}>
-                                          <Package size={20} />
+                                          <span className="text-sm">●</span>
                                         </div>
                                         <div className="min-w-0 flex-1">
                                           <div className="text-[11px] font-bold text-orange-primary uppercase tracking-widest mb-0.5">Kategori #{category.slot_id}</div>
@@ -1209,7 +1238,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                                   : 'text-orange-primary border-orange-primary/30 bg-orange-primary/5 hover:bg-orange-primary/10'
                                             }`}
                                           >
-                                            {category.visible === 1 ? <EyeOff size={12} className="md:size-4" /> : <Eye size={12} className="md:size-4" />}
+                                            {category.visible === 1 ? '○' : '●'}
                                           </button>
 
                                           <button 
@@ -1225,7 +1254,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                             title="Edit Kategori"
                                             className="p-1.5 md:p-2 text-text-muted border border-border-main rounded-lg hover:text-orange-primary hover:bg-orange-primary/5 transition-all"
                                           >
-                                            <Settings size={12} className="md:size-4" />
+                                            ⚙
                                           </button>
 
                                           <button 
@@ -1233,7 +1262,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                             title="Kosongkan Seluruh Paket"
                                             className="p-1.5 md:p-2 text-text-muted border border-border-main rounded-lg hover:text-orange-primary hover:bg-orange-primary/5 transition-all"
                                           >
-                                            <Eraser size={12} className="md:size-4" />
+                                            ∅
                                           </button>
 
                                           <button 
@@ -1255,7 +1284,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                             title="Duplikasi Kategori"
                                             className="p-1.5 md:p-2 text-text-muted border border-border-main rounded-lg hover:text-orange-primary hover:bg-orange-primary/5 transition-all"
                                           >
-                                            <Copy size={12} className="md:size-4" />
+                                            ⎘
                                           </button>
 
                                           <button 
@@ -1263,7 +1292,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                             title="Hapus Kategori"
                                             className="p-1.5 md:p-2 text-text-muted border border-border-main rounded-lg hover:text-red-500 hover:bg-red-500/5 transition-all"
                                           >
-                                            <Trash2 size={12} className="md:size-4" />
+                                            ×
                                           </button>
                                         </div>
 
@@ -1276,7 +1305,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                           }}
                                           className="bg-orange-primary text-black md:bg-orange-primary/10 md:text-orange-primary text-xs md:text-[11px] font-bold flex items-center justify-center w-7 h-7 md:w-auto md:h-7 md:px-2.5 rounded-lg border border-orange-primary/20 transition-all shrink-0 hover:bg-orange-primary hover:text-black"
                                         >
-                                          <Plus size={12} />
                                           <span className="hidden md:inline ml-1 uppercase">Tambah Paket</span>
                                         </button>
                                       </div>
@@ -1297,7 +1325,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                                           <>
                                             {overtimePkgs.length > 0 && (
                                               <div className="mb-4 flex items-start gap-2 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-xl">
-                                                <AlertCircle size={14} className="text-red-400 shrink-0 mt-0.5" />
                                                 <span className="text-xs text-red-400">
                                                   <strong className="uppercase tracking-wider">Peringatan:</strong> {overtimePkgs.map(p => `"${p.name}"`).join(', ')} memiliki durasi melebihi jam aktif ({Math.floor(workMins / 60)}j{workMins % 60 > 0 ? `${workMins % 60}m` : ''}).
                                                 </span>
@@ -1430,7 +1457,7 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
             </div>
           )}
         </div>
-      </div>
+      )}
 
       {/* Modals */}
       <AnimatePresence>
@@ -1469,7 +1496,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                           <option key={game.name} value={game.name}>{game.name}</option>
                         ))}
                       </select>
-                      <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" size={18} />
                     </div>
                   )}
                 </div>
@@ -1543,7 +1569,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                               );
                             })}
                           </select>
-                          <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" size={18} />
                         </div>
                       )}
                     </div>
@@ -1567,7 +1592,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                             <option key={idx} value={r.title}>{r.title}</option>
                           ))}
                         </select>
-                        <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" size={18} />
                       </div>
                     </div>
                   );
@@ -1724,7 +1748,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                         ));
                       })()}
                     </select>
-                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" size={16} />
                   </div>
                 </div>
 
@@ -1802,7 +1825,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                             <option key={i} value={i}>{i} Jam</option>
                           ))}
                         </select>
-                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" size={12} />
                       </div>
                       <div className="relative flex-1">
                         <select
@@ -1813,7 +1835,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                           <option value="0">0 Menit</option>
                           <option value="30">30 Menit</option>
                         </select>
-                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" size={12} />
                       </div>
                     </div>
                   </div>
@@ -1888,7 +1909,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                           <option key={t} value={t} className="bg-bg-sidebar text-text-main">{t}</option>
                         ))}
                       </select>
-                      <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
                     </div>
                   </div>
                 </div>
@@ -1926,7 +1946,6 @@ export default function EtalasePage({ user, onRefreshStats }: EtalasePageProps) 
                             <option key={t} value={t} className="bg-bg-sidebar text-text-main">{t}</option>
                           ))}
                         </select>
-                        <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
                       </div>
                     </div>
                   )}

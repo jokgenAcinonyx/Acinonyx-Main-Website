@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { User, Lock, Mail, ArrowRight, Sparkles, ShieldCheck, Phone, Calendar, CheckCircle2, MessageSquare } from 'lucide-react';
+
 import { useAlert } from './AlertContext';
 
 interface AuthPageProps {
@@ -345,12 +345,7 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
         {/* Left Side */}
         <div className="md:w-5/12 bg-gradient-to-br from-bg-sidebar to-bg-main p-8 md:p-12 flex flex-col justify-between relative overflow-hidden border-r border-border-main">
           <div className="relative z-10">
-            <div className="flex items-center gap-2 mb-8">
-              <div className="w-10 h-10 bg-orange-primary rounded-xl flex items-center justify-center shadow-[0_0_20px_rgba(255,159,28,0.3)]">
-                <Sparkles className="text-black" size={20} />
-              </div>
-              <span className="text-orange-primary font-extrabold text-xl tracking-wider">ACINONYX</span>
-            </div>
+            <div className="mb-8" />
 
             <AnimatePresence mode="wait">
               <motion.div
@@ -377,9 +372,6 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
 
           <div className="relative z-10 mt-12 space-y-4">
             <div className="flex items-center gap-4 p-4 bg-bg-main/50 rounded-2xl border border-border-main backdrop-blur-sm">
-              <div className="w-12 h-12 rounded-full bg-orange-primary/20 flex items-center justify-center">
-                <ShieldCheck className="text-orange-primary" size={24} />
-              </div>
               <div>
                 <h4 className="text-text-main font-semibold text-sm">Login aman via Email OTP</h4>
                 <p className="text-text-muted text-xs">Verifikasi identitas Anda dengan kode 6-digit.</p>
@@ -413,12 +405,11 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                     <div className="space-y-2">
                       <label className="text-xs font-bold text-text-muted uppercase tracking-widest ml-1">Email Bisnis</label>
                       <div className="relative">
-                        <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted" size={18} />
                         <input 
                           type="email" 
                           required
                           placeholder="email@acinonyx.com"
-                          className="w-full bg-bg-main border border-border-main rounded-xl py-3.5 pl-12 pr-4 text-text-main focus:outline-none focus:border-orange-primary transition-all"
+                          className="w-full bg-bg-main border border-border-main rounded-xl py-3.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all"
                           value={formData.email}
                           onChange={(e) => setFormData({...formData, email: e.target.value})}
                         />
@@ -427,7 +418,6 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
 
                     {error && (
                       <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl flex items-center gap-3 animate-shake">
-                        <ShieldCheck className="text-red-500 shrink-0" size={18} />
                         <p className="text-xs font-bold text-red-500 uppercase tracking-widest">{error}</p>
                       </div>
                     )}
@@ -493,13 +483,12 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                     <div className="space-y-2">
                       <label className="text-xs font-bold text-text-muted uppercase tracking-widest ml-1">Password Baru</label>
                       <div className="relative">
-                        <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted" size={18} />
                         <input 
                           type="password" 
                           required
                           autoComplete="new-password"
                           placeholder="••••••••"
-                          className="w-full bg-bg-main border border-border-main rounded-xl py-3.5 pl-12 pr-4 text-text-main focus:outline-none focus:border-orange-primary transition-all"
+                          className="w-full bg-bg-main border border-border-main rounded-xl py-3.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all"
                           value={formData.password}
                           onChange={(e) => setFormData({...formData, password: e.target.value})}
                         />
@@ -542,7 +531,6 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
 
                     {error && (
                       <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl flex items-center gap-3 animate-shake">
-                        <ShieldCheck className="text-red-500 shrink-0" size={18} />
                         <p className="text-xs font-bold text-red-500 uppercase tracking-widest">{error}</p>
                       </div>
                     )}
@@ -582,12 +570,11 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                       <div className="space-y-1.5">
                         <label className="text-xs font-bold text-text-muted uppercase tracking-wider ml-1">Username / Email / No. Telepon</label>
                         <div className="relative group">
-                          <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted group-focus-within:text-orange-primary transition-colors" size={18} />
                           <input 
                             type="text"
                             required
                             placeholder="username, user@gmail.com, atau 0812..."
-                            className="w-full bg-bg-main border border-border-main rounded-xl py-3.5 pl-12 pr-4 text-text-main focus:outline-none focus:border-orange-primary transition-all"
+                            className="w-full bg-bg-main border border-border-main rounded-xl py-3.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all"
                             value={formData.identity}
                             onChange={(e) => setFormData({...formData, identity: e.target.value})}
                           />
@@ -596,13 +583,12 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                       <div className="space-y-1.5">
                         <label className="text-xs font-bold text-text-muted uppercase tracking-wider ml-1">Password</label>
                         <div className="relative group">
-                          <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted group-focus-within:text-orange-primary transition-colors" size={18} />
                           <input 
                             type="password"
                             required
                             placeholder="••••••••"
                             autoComplete="new-password"
-                            className="w-full bg-bg-main border border-border-main rounded-xl py-3.5 pl-12 pr-4 text-text-main focus:outline-none focus:border-orange-primary transition-all"
+                            className="w-full bg-bg-main border border-border-main rounded-xl py-3.5 px-4 text-text-main focus:outline-none focus:border-orange-primary transition-all"
                             value={formData.password}
                             onChange={(e) => setFormData({...formData, password: e.target.value})}
                           />
@@ -667,13 +653,12 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                       <div className="space-y-1.5">
                         <label className="text-xs font-bold text-text-muted uppercase tracking-wider ml-1">Password</label>
                         <div className="relative group">
-                          <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted group-focus-within:text-orange-primary transition-colors" size={18} />
                           <input 
                             type="password"
                             required
                             placeholder="••••••••"
                             autoComplete="new-password"
-                            className="w-full bg-bg-main border border-border-main rounded-xl py-3 pl-12 pr-4 text-text-main focus:outline-none focus:border-orange-primary text-sm"
+                            className="w-full bg-bg-main border border-border-main rounded-xl py-3 px-4 text-text-main focus:outline-none focus:border-orange-primary text-sm"
                             value={formData.password}
                             onChange={(e) => setFormData({...formData, password: e.target.value})}
                           />
@@ -731,7 +716,7 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                             onClick={() => setFormData({...formData, otp_method: 'email'})}
                             className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl border transition-all ${formData.otp_method === 'email' ? 'bg-orange-primary/10 border-orange-primary text-orange-primary' : 'bg-bg-main border-border-main text-text-muted'}`}
                           >
-                            <Mail size={16} /> <span className="text-xs font-bold">EMAIL</span>
+                            <span className="text-xs font-bold">EMAIL</span>
                           </button>
                         </div>
                       </div>
@@ -750,7 +735,6 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                     className="w-full bg-orange-primary hover:bg-orange-primary/90 text-black font-bold py-4 rounded-xl shadow-[0_10px_20px_rgba(255,159,28,0.2)] transition-all flex items-center justify-center gap-2 group disabled:opacity-50"
                   >
                     {loading ? 'MEMPROSES...' : (isLogin ? 'MASUK KE PANEL' : 'BUAT AKUN')}
-                    {!loading && <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" />}
                   </button>
                 </form>
               </>
@@ -760,9 +744,6 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                 animate={{ opacity: 1, y: 0 }}
                 className="space-y-6 text-center"
               >
-                <div className="w-16 h-16 bg-orange-primary/10 rounded-full flex items-center justify-center mx-auto border border-orange-primary/20">
-                  <ShieldCheck className="text-orange-primary" size={32} />
-                </div>
                 <div>
                   <h3 className="text-2xl font-bold text-text-main mb-2">Verifikasi OTP</h3>
                   <p className="text-text-muted text-sm mb-4">
@@ -776,9 +757,6 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                         className={`w-full bg-bg-main border border-orange-primary/30 p-4 rounded-xl flex items-center justify-between group ${otpTimer === 0 ? 'cursor-pointer hover:border-orange-primary' : ''}`}
                       >
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 bg-orange-primary/10 rounded-lg flex items-center justify-center text-orange-primary">
-                            <Mail size={20} />
-                          </div>
                           <div className="text-left">
                             <p className="text-xs font-bold text-text-muted uppercase tracking-widest">
                               {isOtpSent ? 'OTP terkirim ke email' : 'Kirim ke Email'}
@@ -786,11 +764,6 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                             <p className="text-sm font-bold text-text-main">{targetIdentifier}</p>
                           </div>
                         </div>
-                        {otpTimer === 0 ? (
-                          <ArrowRight size={16} className="text-orange-primary group-hover:translate-x-1 transition-all" />
-                        ) : (
-                          <CheckCircle2 size={16} className="text-green-500" />
-                        )}
                       </div>
                     ) : (
                       <div 
@@ -798,9 +771,6 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                         className={`w-full bg-bg-main border border-orange-primary/30 p-4 rounded-xl flex items-center justify-between group ${otpTimer === 0 ? 'cursor-pointer hover:border-orange-primary' : ''}`}
                       >
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 bg-orange-primary/10 rounded-lg flex items-center justify-center text-orange-primary">
-                            <Phone size={20} />
-                          </div>
                           <div className="text-left">
                             <p className="text-xs font-bold text-text-muted uppercase tracking-widest">
                               {isOtpSent ? 'OTP terkirim ke email terdaftar' : 'Kirim ke Nomor Telepon'}
@@ -810,11 +780,6 @@ export default function AuthPage({ onLogin }: AuthPageProps) {
                             </p>
                           </div>
                         </div>
-                        {otpTimer === 0 ? (
-                          <ArrowRight size={16} className="text-orange-primary group-hover:translate-x-1 transition-all" />
-                        ) : (
-                          <CheckCircle2 size={16} className="text-green-500" />
-                        )}
                       </div>
                     )}
                   </div>

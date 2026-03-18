@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { ShieldCheck, Eye, EyeOff, AlertCircle, CheckCircle2, Loader2, Phone } from 'lucide-react';
+
 
 interface AdminSetupPageProps {
   onSetupComplete: (user: any, token: string) => void;
@@ -79,9 +79,6 @@ export default function AdminSetupPage({ onSetupComplete }: AdminSetupPageProps)
           {/* Header */}
           <div className="px-8 pt-8 pb-6 border-b border-border-main">
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-orange-primary/10 border border-orange-primary/20 flex items-center justify-center">
-                <ShieldCheck size={20} className="text-orange-primary" />
-              </div>
               <div>
                 <h1 className="text-base font-bold text-text-main">Pengaturan Awal</h1>
                 <p className="text-xs text-text-muted">Buat akun Minox</p>
@@ -103,9 +100,6 @@ export default function AdminSetupPage({ onSetupComplete }: AdminSetupPageProps)
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col items-center gap-3 py-6 text-center"
               >
-                <div className="w-14 h-14 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
-                  <CheckCircle2 size={28} className="text-emerald-400" />
-                </div>
                 <div>
                   <p className="font-semibold text-text-main">Akun Minox berhasil dibuat</p>
                   <p className="text-xs text-text-muted mt-1">Masuk ke Minox Panel...</p>
@@ -131,7 +125,6 @@ export default function AdminSetupPage({ onSetupComplete }: AdminSetupPageProps)
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-text-muted">Nomor Telepon</label>
                   <div className="relative">
-                    <Phone size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-text-faint" />
                     <input
                       name="phone"
                       type="tel"
@@ -139,7 +132,7 @@ export default function AdminSetupPage({ onSetupComplete }: AdminSetupPageProps)
                       onChange={handleChange}
                       placeholder="+62812xxxx"
                       autoComplete="tel"
-                      className="w-full bg-bg-card border border-border-main rounded-xl pl-10 pr-4 py-2.5 text-sm text-text-main placeholder:text-text-faint focus:outline-none focus:border-orange-primary/50 transition-colors"
+                      className="w-full bg-bg-card border border-border-main rounded-xl px-4 py-2.5 text-sm text-text-main placeholder:text-text-faint focus:outline-none focus:border-orange-primary/50 transition-colors"
                     />
                   </div>
                 </div>
@@ -162,7 +155,7 @@ export default function AdminSetupPage({ onSetupComplete }: AdminSetupPageProps)
                       onClick={() => setShowPassword(p => !p)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-text-faint hover:text-text-muted transition-colors"
                     >
-                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      {showPassword ? '○' : '●'}
                     </button>
                   </div>
                 </div>
@@ -184,7 +177,6 @@ export default function AdminSetupPage({ onSetupComplete }: AdminSetupPageProps)
                 {/* Error */}
                 {error && (
                   <div className="flex items-start gap-2.5 bg-red-500/8 border border-red-500/20 rounded-xl px-4 py-3">
-                    <AlertCircle size={15} className="text-red-400 mt-0.5 shrink-0" />
                     <p className="text-xs text-red-400 leading-relaxed">{error}</p>
                   </div>
                 )}
@@ -195,14 +187,7 @@ export default function AdminSetupPage({ onSetupComplete }: AdminSetupPageProps)
                   disabled={loading}
                   className="w-full bg-orange-primary hover:bg-amber-400 disabled:opacity-60 disabled:cursor-not-allowed text-black font-semibold py-3 rounded-xl text-sm transition-colors flex items-center justify-center gap-2"
                 >
-                  {loading ? (
-                    <>
-                      <Loader2 size={16} className="animate-spin" />
-                      Membuat akun...
-                    </>
-                  ) : (
-                    'Buat Akun Minox'
-                  )}
+                  {loading ? 'Membuat akun...' : 'Buat Akun Minox'}
                 </button>
               </>
             )}

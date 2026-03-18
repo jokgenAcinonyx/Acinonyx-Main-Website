@@ -1,9 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=JetBrains+Mono:wght@400;500;600&family=Cinzel:wght@400;600;700;900&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-display: "Cinzel", "Georgia", serif;
 
   --color-amber-primary: #f59e0b;
   --color-amber-light: #fbbf24;
@@ -17,6 +18,7 @@
   --color-bg-card: var(--bg-card);
   --color-bg-elevated: var(--bg-elevated);
   --color-text-main: var(--text-main);
+  --color-text-title: var(--text-title);
   --color-text-muted: var(--text-muted);
   --color-text-faint: var(--text-faint);
   --color-border-main: var(--border-main);
@@ -29,6 +31,7 @@
   --bg-card: #1e1e22;
   --bg-elevated: #27272a;
   --text-main: #e4e4e7;
+  --text-title: #D0E4FF;
   --text-muted: #a1a1aa;
   --text-faint: #71717a;
   --border-main: #27272a;
@@ -36,15 +39,20 @@
 }
 
 .light {
-  --bg-main: #f8f9fa;
-  --bg-sidebar: #ffffff;
-  --bg-card: #ffffff;
-  --bg-elevated: #f4f4f5;
-  --text-main: #18181b;
-  --text-muted: #71717a;
-  --text-faint: #a1a1aa;
-  --border-main: #e4e4e7;
-  --border-subtle: #f4f4f5;
+  --bg-main: #F6F0E4;
+  --bg-sidebar: #EDE6D6;
+  --bg-card: #E7DFD0;
+  --bg-elevated: #DED5C4;
+  /* body text: dark charcoal */
+  --text-main: #2E2E2E;
+  /* card/section titles: dark navy */
+  --text-title: #1B2A4A;
+  /* secondary / labels: olive drab */
+  --text-muted: #6B7645;
+  /* faint hints: lighter olive */
+  --text-faint: #8A9965;
+  --border-main: #CEC3AB;
+  --border-subtle: #DED5C4;
 }
 
 body {
@@ -107,4 +115,16 @@ body {
 ::selection {
   background: rgba(245, 158, 11, 0.25);
   color: var(--text-main);
+}
+
+/* ─── Semantic heading colors (light mode) ─── */
+/* Page & section headings → dark navy */
+.light h1.text-text-main,
+.light h2.text-text-main {
+  color: var(--text-title);
+}
+
+/* Reusable utility class for nav card titles → dark navy */
+.text-text-title {
+  color: var(--color-text-title);
 }

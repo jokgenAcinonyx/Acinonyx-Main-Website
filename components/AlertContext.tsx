@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, AlertCircle, CheckCircle2, AlertTriangle, Info } from 'lucide-react';
+
 
 type AlertType = 'error' | 'success' | 'warning' | 'info';
 
@@ -35,12 +35,7 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
     setAlerts(prev => prev.filter(a => a.id !== id));
   }, []);
 
-  const iconMap = {
-    error: <AlertCircle size={16} />,
-    success: <CheckCircle2 size={16} />,
-    warning: <AlertTriangle size={16} />,
-    info: <Info size={16} />,
-  };
+
 
   const colorMap = {
     error: { bg: 'bg-red-500/10', border: 'border-red-500/30', text: 'text-red-400', icon: 'text-red-500' },
@@ -65,13 +60,12 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
                 transition={{ duration: 0.2 }}
                 className={`pointer-events-auto ${colors.bg} border ${colors.border} rounded-xl p-3.5 flex items-start gap-3 shadow-2xl backdrop-blur-md`}
               >
-                <div className={`${colors.icon} shrink-0 mt-0.5`}>{iconMap[alert.type]}</div>
                 <p className={`${colors.text} text-xs font-bold uppercase tracking-wide flex-1 leading-relaxed`}>{alert.message}</p>
                 <button
                   onClick={() => removeAlert(alert.id)}
                   className={`${colors.icon} shrink-0 hover:opacity-70 transition-opacity`}
                 >
-                  <X size={14} />
+                  ×
                 </button>
               </motion.div>
             );

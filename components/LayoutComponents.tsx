@@ -21,9 +21,6 @@ export const NavItem: React.FC<NavItemProps> = ({ icon, label, active = false, o
       }`}
     >
       <div className="flex items-center gap-3">
-        <span className={`transition-colors ${active ? 'text-orange-primary' : 'text-text-muted group-hover:text-text-main'}`}>
-          {icon}
-        </span>
         <span className="text-[13px] font-medium">{label}</span>
       </div>
       {badge && (
@@ -46,7 +43,7 @@ export const StatCard: React.FC<StatCardProps> = ({ label, value, status }) => {
     <div className="bg-bg-card border border-border-main rounded-xl p-4 md:p-5 hover:border-orange-primary/20 transition-all duration-200">
       <p className="text-xs text-text-muted font-medium uppercase tracking-wide mb-2">{label}</p>
       <h3 className={`text-lg md:text-xl font-semibold tracking-tight ${
-        status === 'active' ? 'text-emerald-400' : status === 'busy' ? 'text-orange-primary' : 'text-text-main'
+        status === 'active' ? 'text-emerald-400' : status === 'busy' ? 'text-orange-primary' : 'text-amber-primary'
       }`}>
         {value}
       </h3>
@@ -62,7 +59,6 @@ interface SectionHeaderProps {
 export const SectionHeader: React.FC<SectionHeaderProps> = ({ icon, title }) => {
   return (
     <div className="flex items-center gap-2 mb-4 md:mb-5">
-      <span className="text-text-muted">{icon}</span>
       <h2 className="text-xs font-semibold uppercase tracking-wide text-text-muted">{title}</h2>
     </div>
   );
@@ -79,14 +75,13 @@ export const TopNavItem: React.FC<{ icon: React.ReactNode, label: string, active
       }`}
     >
       <div className="relative flex items-center justify-center">
-        {React.cloneElement(icon as React.ReactElement<{ size?: number }>, { size: 18 })}
         {badge && (
           <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[10px] font-semibold w-4 h-4 rounded-full flex items-center justify-center border-2 border-bg-sidebar">
             {badge}
           </span>
         )}
       </div>
-      <span className="text-[13px] font-medium hidden sm:inline">{label}</span>
+      <span className="text-[13px] font-medium">{label}</span>
       {active && <motion.div layoutId="topNav" className="absolute bottom-0 left-3 right-3 h-0.5 bg-orange-primary rounded-full" />}
     </button>
   );
@@ -99,7 +94,6 @@ export const BottomNavItem: React.FC<{ icon: React.ReactNode, label: string, act
       className={`flex flex-col items-center gap-0.5 px-3 py-1.5 relative transition-colors ${active ? 'text-orange-primary' : 'text-text-muted'}`}
     >
       <div className="relative">
-        {icon}
         {badge && (
           <span className="absolute -top-1 -right-1.5 bg-red-500 text-white text-[10px] font-semibold w-4 h-4 rounded-full flex items-center justify-center">
             {badge}

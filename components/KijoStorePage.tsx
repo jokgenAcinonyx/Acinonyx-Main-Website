@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
-  ArrowLeft, Star, Shield, Zap, Clock, Package, CheckCircle2,
-  AlertCircle, XCircle, ChevronDown, Calendar, History, Wallet
+  ArrowLeft, Star
 } from 'lucide-react';
 import PaymentPage from './PaymentPage';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
+import { formatDuration } from '@/utils/formatters';
 import { useAlert } from './AlertContext';
 
 interface KijoStorePageProps {
@@ -94,7 +94,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
           fetchWithAuth(`/api/marketplace/kijo/${kijoId}`),
           fetchWithAuth(`/api/marketplace/kijo/${kijoId}/history`),
           fetchWithAuth('/api/kijo/available-games'),
-          fetchWithAuth('/api/admin/settings'),
+          fetchWithAuth('/api/settings/admin-fee'),
           fetchWithAuth(`/api/kijo/game-accounts/${user.id}`),
           fetchWithAuth(`/api/marketplace/kijo/${kijoId}/reviews`)
         ]);
@@ -123,19 +123,20 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
     load();
   }, [kijoId, user.id]);
 
-  // ── Fetch available slots when kijo or date changes ─────────────────────────
-  useEffect(() => {
+  // ── Fetch available slots when kijo or date changes, or returning from payment ──
+  const fetchAvailableSlots = useCallback(async () => {
     if (!kijo || !selectedDate) return;
-    const fetch_ = async () => {
-      try {
-        const res = await fetchWithAuth(`/api/kijo/available-slots/${kijo.id}?date=${selectedDate}`);
-        if (res.ok) setAvailableSlots(await res.json());
-      } catch (e) {
-        console.error('Error fetching slots:', e);
-      }
-    };
-    fetch_();
+    try {
+      const res = await fetchWithAuth(`/api/kijo/available-slots/${kijo.id}?date=${selectedDate}`);
+      if (res.ok) setAvailableSlots(await res.json());
+    } catch (e) {
+      console.error('Error fetching slots:', e);
+    }
   }, [kijo, selectedDate]);
+
+  useEffect(() => {
+    fetchAvailableSlots();
+  }, [fetchAvailableSlots]);
 
   // ── Recompute admin fee & total when package/qty changes ────────────────────
   useEffect(() => {
@@ -254,7 +255,8 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
       slotTime.setHours(hour, minute, 0, 0);
 
       const now = new Date();
-      let type: 'available' | 'busy' | 'past' | 'overlap' = slotTime < now ? 'past' : 'available';
+      const LEAD_TIME_MS = 20 * 60 * 1000; // 20-minute lead time required before booking
+      let type: 'available' | 'busy' | 'past' | 'overlap' = slotTime.getTime() - now.getTime() < LEAD_TIME_MS ? 'past' : 'available';
 
       if (type === 'available' && availableSlots.break_until) {
         if (slotTime < new Date(availableSlots.break_until)) type = 'busy';
@@ -375,9 +377,10 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
           scheduledAt: `${selectedDate}T${selectedTime}:00`,
           kijoGameAccountId: selectedBoostingAccountId || undefined
         }}
-        onBack={() => setIsPaying(false)}
+        onBack={() => { setIsPaying(false); fetchAvailableSlots(); }}
         onSuccess={() => {
           setIsPaying(false);
+          fetchAvailableSlots();
           onOrderSuccess();
         }}
       />
@@ -460,7 +463,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
               {/* Status warning */}
               {kijo.effective_status === 'busy' && (
                 <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl flex items-start gap-3">
-                  <XCircle className="text-red-500 shrink-0 mt-0.5" size={16} />
                   <div>
                     <p className="text-xs font-bold text-red-500 uppercase tracking-widest">Slot Penuh</p>
                     <p className="text-xs text-red-500/80 font-bold leading-relaxed">
@@ -473,7 +475,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
               {/* Motto & Detail */}
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2">
-                  <Zap size={13} className="text-orange-primary" />
                   <span className="text-[11px] font-bold text-text-muted uppercase tracking-widest">Motto & Detail</span>
                 </div>
                 <p className="text-xs font-bold text-text-muted italic leading-relaxed">"{kijo.motto || 'Siap menggendong Anda sampai rank impian!'}"</p>
@@ -485,7 +486,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                 <div className="flex flex-wrap gap-1.5">
                   {kijo.traits.map((t: any) => (
                     <div key={t.trait_key} className="flex items-center gap-1 px-2 py-1 bg-bg-main border border-border-main rounded-lg">
-                      <Shield size={10} className="text-orange-primary" />
                       <span className="text-[11px] font-bold text-text-main uppercase tracking-widest">{t.trait_key.replace(/_/g, ' ')}</span>
                     </div>
                   ))}
@@ -516,7 +516,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                 <Star size={14} className="text-orange-primary" fill="currentColor" />
                 <span className="text-xs font-bold text-text-muted uppercase tracking-wider">Rating & Ulasan</span>
               </div>
-              <ChevronDown size={14} className="text-text-muted" />
             </div>
             <div className="flex items-center gap-3">
               <span className="text-2xl font-bold text-text-main">{(kijo.rating || 0).toFixed(1)}</span>
@@ -541,7 +540,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
           {kijoHistory.length > 0 && (
             <div className="bg-bg-sidebar border border-border-main rounded-2xl p-5 space-y-4 shadow-sm">
               <div className="flex items-center gap-2">
-                <History size={14} className="text-orange-primary" />
                 <h3 className="text-xs font-bold text-text-muted uppercase tracking-wider">Riwayat Pesanan</h3>
               </div>
               <div className="space-y-2">
@@ -554,10 +552,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                     <div className="flex items-center gap-3">
                       <div className="text-right">
                         <p className="text-[11px] text-text-muted font-semibold uppercase">{h.package_type}</p>
-                        <p className="text-xs font-bold text-text-main">{h.duration} Jam</p>
-                      </div>
-                      <div className="w-7 h-7 bg-green-500/10 rounded-lg flex items-center justify-center text-green-500">
-                        <CheckCircle2 size={14} />
+                        <p className="text-xs font-bold text-text-main">{formatDuration(h.duration)}</p>
                       </div>
                     </div>
                   </div>
@@ -573,7 +568,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
           {bookingStep === 1 ? (
             <div className="bg-bg-sidebar border border-border-main rounded-2xl p-5 md:p-8 shadow-sm space-y-6">
               <div className="flex items-center gap-3">
-                <Package size={18} className="text-orange-primary" />
                 <h3 className="text-xs font-bold text-text-muted uppercase tracking-wider">Pilihan Paket</h3>
               </div>
 
@@ -674,7 +668,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
               {/* No personal accounts warning */}
               {userGameAccounts.filter(a => a.account_type === 'personal').length === 0 && (
                 <div className="bg-orange-primary/10 border border-orange-primary/30 p-4 rounded-2xl flex items-start gap-3">
-                  <AlertCircle className="text-orange-primary shrink-0 mt-0.5" size={16} />
                   <div className="space-y-1">
                     <p className="text-xs font-bold text-orange-primary uppercase tracking-widest">Belum Ada Akun Game</p>
                     <p className="text-xs text-orange-primary/80 font-bold leading-relaxed uppercase">
@@ -710,7 +703,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                       {selectedTime && (
                         <div className="flex items-center gap-2 animate-in slide-in-from-right-2 duration-300">
                           <div className="flex items-center gap-2 bg-orange-primary/10 px-3 py-2 rounded-xl border border-orange-primary/20">
-                            <Clock size={12} className="text-orange-primary" />
                             <span className="text-xs font-bold text-orange-primary uppercase tracking-tighter">
                               Selesai: {(() => {
                                 const [h, m] = selectedTime.split(':').map(Number);
@@ -725,7 +717,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                             onClick={() => setSelectedTime('')}
                             className="p-2 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white rounded-xl border border-red-500/20 transition-all"
                           >
-                            <XCircle size={14} />
+                            <span className="font-bold text-sm">×</span>
                           </button>
                         </div>
                       )}
@@ -756,7 +748,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                   <div className="grid grid-cols-4 gap-2">
                     {timeSlots.length === 0 && availableSlots && (
                       <div className="col-span-4 py-8 text-center bg-bg-sidebar border border-border-main rounded-xl">
-                        <AlertCircle className="mx-auto text-text-muted mb-2" size={24} />
                         <p className="text-xs text-text-muted italic">Maaf, partner tidak aktif pada hari ini.</p>
                       </div>
                     )}
@@ -918,7 +909,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                           <option key={acc.id} value={acc.id}>{acc.nickname} ({acc.rank})</option>
                         ))}
                       </select>
-                      <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" size={16} />
                     </div>
                   ) : (
                     <div className="bg-bg-sidebar border border-dashed border-border-main rounded-xl py-3 px-4 text-xs text-text-muted italic">
@@ -1011,8 +1001,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                         <p className="text-sm font-bold text-text-main">{bookingData.nickname}</p>
                         <p className="text-xs font-bold text-text-muted">{bookingData.gameId}</p>
                       </div>
-                      <CheckCircle2 className="text-green-500" size={20} />
-                    </div>
+                      </div>
                   )}
                 </div>
 
@@ -1020,7 +1009,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                 <div className="pt-4 space-y-2 border-t border-border-main">
                   {matchingAccounts.length === 0 && (
                     <div className="bg-red-500/10 border border-red-500/30 p-4 rounded-2xl mb-4 flex items-start gap-3">
-                      <AlertCircle className="text-red-500 shrink-0" size={16} />
                       <div className="space-y-1">
                         <p className="text-xs font-bold text-red-500 uppercase tracking-widest">Akses Ditolak</p>
                         <p className="text-xs font-bold text-red-500 leading-relaxed uppercase">
@@ -1052,7 +1040,6 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                 disabled={!bookingData.nickname || !bookingData.gameId || !selectedTime || matchingAccounts.length === 0}
                 className="w-full bg-orange-primary hover:bg-orange-primary/90 text-black font-bold py-4 md:py-5 rounded-2xl shadow-xl shadow-orange-primary/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50 text-sm md:text-base"
               >
-                <Wallet size={18} />
                 {matchingAccounts.length === 0 ? 'TAMBAHKAN AKUN PERSONAL DAHULU' : 'LANJUT KE PEMBAYARAN'}
               </button>
             </motion.div>
@@ -1078,7 +1065,7 @@ export default function KijoStorePage({ user, kijoId, onBack, onOrderSuccess, sy
                 </div>
               </div>
               <button onClick={() => setShowReviewsModal(false)} className="p-2 hover:bg-bg-main rounded-xl transition-all">
-                <XCircle size={18} className="text-text-muted" />
+                <span className="font-bold text-text-muted">×</span>
               </button>
             </div>
 

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Wallet, Shield, AlertCircle, CheckCircle2, CreditCard, Banknote, Landmark } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
 import { useAlert } from './AlertContext';
 
@@ -73,7 +73,6 @@ export default function WithdrawalPage({ user, mode, onBack, onSuccess }: Withdr
     return (
       <div className="flex flex-col items-center justify-center py-20 animate-in zoom-in duration-500">
         <div className="w-24 h-24 bg-green-500/10 rounded-full flex items-center justify-center text-green-500 mb-8 shadow-2xl shadow-green-500/20">
-          <CheckCircle2 size={64} />
         </div>
         <h2 className="text-4xl font-bold text-text-main mb-4 tracking-tighter uppercase">Pengajuan Berhasil!</h2>
         <p className="text-text-muted text-center max-w-md mb-10 font-medium">
@@ -100,9 +99,6 @@ export default function WithdrawalPage({ user, mode, onBack, onSuccess }: Withdr
 
       <div className="bg-bg-sidebar border border-border-main rounded-2xl sm:rounded-2xl p-5 sm:p-10 shadow-xl">
         <div className="flex items-center gap-4 mb-6 sm:mb-10">
-          <div className="w-12 h-12 sm:w-16 sm:h-16 bg-orange-primary/10 rounded-xl sm:rounded-2xl flex items-center justify-center text-orange-primary shadow-lg shadow-orange-primary/5">
-            <Wallet size={20} className="sm:size-32" />
-          </div>
           <div>
             <h2 className="text-lg sm:text-3xl font-bold text-text-main tracking-tighter uppercase">Tarik Dana <span className="text-orange-primary">{mode === 'kijo' ? 'Pendapatan.' : 'Refund.'}</span></h2>
             <p className="text-text-muted text-xs sm:text-sm font-medium">
@@ -118,7 +114,6 @@ export default function WithdrawalPage({ user, mode, onBack, onSuccess }: Withdr
               <p className="text-xs sm:text-xs text-text-muted font-semibold uppercase tracking-wide mb-1">Saldo Tersedia</p>
               <p className="text-2xl sm:text-3xl font-bold text-text-main font-mono">Rp {balance.toLocaleString() || '0'}</p>
             </div>
-            <Banknote size={32} className="text-orange-primary/20 sm:size-40" />
           </div>
 
           {/* Bank Info Form for Kijo */}

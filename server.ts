@@ -1,6 +1,7 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import crypto from 'crypto';
 import { Server as SocketServer } from 'socket.io';
 import nodemailer from 'nodemailer';
 import { createServer as createViteServer } from 'vite';
@@ -75,6 +76,17 @@ const EMAIL_PASS = process.env.EMAIL_PASS ?? '';
 const EMAIL_FROM = process.env.EMAIL_FROM ?? `Jokgen Acinonyx <${EMAIL_USER}>`;
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'acinonyx-dev-secret-change-in-production';
+
+// Midtrans config
+const MIDTRANS_SERVER_KEY = process.env.MIDTRANS_SERVER_KEY ?? '';
+const MIDTRANS_CLIENT_KEY = process.env.MIDTRANS_CLIENT_KEY ?? '';
+const MIDTRANS_IS_PRODUCTION = process.env.MIDTRANS_IS_PRODUCTION === 'true';
+const MIDTRANS_SNAP_URL = MIDTRANS_IS_PRODUCTION
+  ? 'https://app.midtrans.com/snap/v1/transactions'
+  : 'https://app.sandbox.midtrans.com/snap/v1/transactions';
+const MIDTRANS_API_URL = MIDTRANS_IS_PRODUCTION
+  ? 'https://api.midtrans.com/v2'
+  : 'https://api.sandbox.midtrans.com/v2';
 const BCRYPT_ROUNDS = 12;
 
 const transporter = nodemailer.createTransport({
@@ -181,9 +193,13 @@ async function startServer() {
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(50) DEFAULT NULL",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS kijo_finished TINYINT(1) DEFAULT 0",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS jokies_finished TINYINT(1) DEFAULT 0",
-    "ALTER TABLE sessions MODIFY COLUMN IF EXISTS status ENUM('upcoming','ongoing','completed','cancelled','pending_completion','pending_cancellation') DEFAULT 'upcoming'",
+    "ALTER TABLE sessions MODIFY COLUMN IF EXISTS status ENUM('upcoming','ongoing','completed','cancelled','pending_completion','pending_cancellation','pending_payment') DEFAULT 'upcoming'",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS started_at DATETIME DEFAULT NULL",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS cancel_escalated TINYINT(1) DEFAULT 0",
+    // Widen screenshot columns: varchar(255) is too small for base64 data URIs (GCS fallback)
+    "ALTER TABLE sessions MODIFY COLUMN IF EXISTS screenshot_start MEDIUMTEXT NULL DEFAULT NULL",
+    "ALTER TABLE sessions MODIFY COLUMN IF EXISTS screenshot_end MEDIUMTEXT NULL DEFAULT NULL",
+    "ALTER TABLE sessions MODIFY COLUMN IF EXISTS final_screenshot MEDIUMTEXT NULL DEFAULT NULL",
   ];
   for (const sql of sessionsMigrations) {
     try { await db.query(sql); } catch (err) { console.warn('[Migration]', sql.slice(0, 60), err); }
@@ -296,19 +312,70 @@ async function startServer() {
     console.warn('[Migration] Could not create saved_payment_methods table:', err);
   }
 
-  // Order chat table for Kijo-Jokies real-time messaging
+  // Order chat table for Kijo-Jokies real-time messaging (includes read-receipt columns)
   try {
     await db.query(`CREATE TABLE IF NOT EXISTS order_chats (
       id INT PRIMARY KEY AUTO_INCREMENT,
       session_id INT NOT NULL,
       sender_id INT NOT NULL,
       message TEXT NOT NULL,
+      status ENUM('sending','sent','delivered','read','failed') DEFAULT 'sent',
+      read_at TIMESTAMP NULL DEFAULT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
       FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
     )`);
+    // Backfill columns for tables created before this migration
+    await addColumnIfMissing('order_chats', 'status', "ENUM('sending','sent','delivered','read','failed') DEFAULT 'sent'");
+    await addColumnIfMissing('order_chats', 'read_at', 'TIMESTAMP NULL DEFAULT NULL');
   } catch (err) {
-    console.warn('[Migration] Could not create order_chats table:', err);
+    console.warn('[Migration] Could not create/update order_chats table:', err);
+  }
+
+  // Escrow system: payment_transactions table for Midtrans integration
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS payment_transactions (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      order_id VARCHAR(100) NOT NULL UNIQUE,
+      session_id INT DEFAULT NULL,
+      jokies_id INT NOT NULL,
+      kijo_id INT NOT NULL,
+      amount INT NOT NULL,
+      admin_fee INT NOT NULL DEFAULT 0,
+      total_amount INT NOT NULL,
+      payment_type VARCHAR(50) DEFAULT NULL,
+      payment_status ENUM('pending','settlement','capture','deny','cancel','expire','refund','partial_refund') DEFAULT 'pending',
+      escrow_status ENUM('none','held','released','refunded','partial_refund') DEFAULT 'none',
+      midtrans_transaction_id VARCHAR(255) DEFAULT NULL,
+      snap_token VARCHAR(255) DEFAULT NULL,
+      snap_redirect_url TEXT DEFAULT NULL,
+      idempotency_key VARCHAR(100) NOT NULL UNIQUE,
+      refund_amount INT DEFAULT 0,
+      refund_reason TEXT DEFAULT NULL,
+      refunded_by VARCHAR(50) DEFAULT NULL,
+      settled_at DATETIME DEFAULT NULL,
+      released_at DATETIME DEFAULT NULL,
+      refunded_at DATETIME DEFAULT NULL,
+      raw_notification JSON DEFAULT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL,
+      FOREIGN KEY (jokies_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (kijo_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+    console.log('[Migration] payment_transactions table ensured.');
+  } catch (err) {
+    console.warn('[Migration] Could not create payment_transactions table:', err);
+  }
+
+  // Add escrow columns to sessions table
+  const escrowMigrations = [
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS escrow_status ENUM('none','held','released','refunded','partial_refund') DEFAULT 'none'",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS midtrans_order_id VARCHAR(100) DEFAULT NULL",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS payment_transaction_id INT DEFAULT NULL",
+  ];
+  for (const sql of escrowMigrations) {
+    try { await db.query(sql); } catch (err) { console.warn('[Migration]', sql.slice(0, 60), err); }
   }
 
   // Validate SMTP config early to ensure OTP can be sent.
@@ -329,6 +396,17 @@ async function startServer() {
   }));
   app.use(express.json({ limit: '5mb' }));
 
+  // Global API rate limiter — prevents brute-force and DoS
+  const globalLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 120, // 120 requests per minute per IP
+    message: { success: false, message: 'Terlalu banyak request. Coba lagi sebentar.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req: any) => req.path === '/api/payment/webhook', // Don't double-limit webhooks
+  });
+  app.use('/api/', globalLimiter);
+
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 20,
@@ -336,6 +414,28 @@ async function startServer() {
     standardHeaders: true,
     legacyHeaders: false,
   });
+
+  // Rate limiter for payment endpoints (stricter)
+  const paymentLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 15,
+    message: { success: false, message: 'Terlalu banyak request pembayaran. Coba lagi sebentar.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // Rate limiter for webhook endpoint (allow Midtrans retries, but block abuse)
+  const webhookLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 60,
+    message: 'Too many requests',
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // Payment timeout: 15 min Midtrans window + 5 min server buffer
+  const PAYMENT_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
+  const PAYMENT_DISPLAY_TIMEOUT_MS = 15 * 60 * 1000; // 15 min shown to user
 
   // Auth middleware: verify JWT token on protected routes
   function requireAuth(req: any, res: any, next: any) {
@@ -1295,8 +1395,78 @@ async function startServer() {
         console.error('Auto-cancel expired jokies sessions error:', e);
       }
 
+      // Auto-cancel: pending_payment sessions older than 20 minutes (15 min Midtrans + 5 min buffer)
+      try {
+        const pendingPayments = (await db.prepare(`
+          SELECT id, user_id, created_at FROM sessions WHERE jokies_id = ? AND status = 'pending_payment'
+        `).all(userId)) as any[];
+        for (const s of pendingPayments) {
+          const createdAt = new Date(s.created_at).getTime();
+          if (now.getTime() - createdAt > PAYMENT_TIMEOUT_MS) {
+            await db.transaction(async () => {
+              await db.prepare("UPDATE sessions SET status = 'cancelled', cancelled_at = NOW(), cancelled_by = 'system', cancellation_reason = 'Otomatis dibatalkan: pembayaran tidak diselesaikan dalam waktu yang ditentukan' WHERE id = ? AND status = 'pending_payment'").run(s.id);
+              await db.prepare("UPDATE payment_transactions SET payment_status = 'expire', escrow_status = 'none', updated_at = NOW() WHERE session_id = ? AND payment_status = 'pending'").run(s.id);
+              await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                userId, 'order_update', 'Pembayaran Kedaluwarsa',
+                `Pesanan #${s.id} dibatalkan otomatis karena pembayaran tidak diselesaikan dalam waktu yang ditentukan.`
+              );
+            })();
+          }
+        }
+      } catch (e) {
+        console.error('Auto-cancel pending_payment jokies error:', e);
+      }
+
+      // Auto-complete: ongoing sessions past scheduled_at + duration (unattended)
+      try {
+        const ongoingSessions = (await db.prepare(`
+          SELECT id, user_id, scheduled_at, duration, screenshot_start, screenshot_end, total_price, price, admin_fee, escrow_status, payment_transaction_id
+          FROM sessions WHERE jokies_id = ? AND status = 'ongoing'
+        `).all(userId)) as any[];
+        for (const s of ongoingSessions) {
+          const endTime = new Date(new Date(s.scheduled_at).getTime() + (s.duration || 1) * 60 * 60 * 1000);
+          if (now > endTime) {
+            const hasProofs = !!(s.screenshot_start && s.screenshot_end);
+            await db.transaction(async () => {
+              if (hasProofs) {
+                // Kijo uploaded both proofs → auto-complete with escrow release
+                await db.prepare("UPDATE sessions SET status = 'completed', completed_at = NOW(), kijo_finished = 1, jokies_finished = 1, escrow_status = 'released' WHERE id = ? AND status = 'ongoing'").run(s.id);
+                // Release escrow: move held balance to Kijo's active balance
+                const kijoEarnings = s.price || (s.total_price - (s.admin_fee || 0));
+                await db.prepare('UPDATE users SET balance_active = balance_active + ? WHERE id = ?').run(kijoEarnings, s.user_id);
+                if (s.payment_transaction_id) {
+                  await db.prepare("UPDATE payment_transactions SET escrow_status = 'released', released_at = NOW(), updated_at = NOW() WHERE id = ?").run(s.payment_transaction_id);
+                }
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  s.user_id, 'order_update', 'Pesanan Selesai Otomatis',
+                  `Pesanan #${s.id} telah diselesaikan otomatis. Dana Rp ${(kijoEarnings || 0).toLocaleString()} dicairkan ke Saldo Aktif Anda.`
+                );
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  userId, 'order_update', 'Pesanan Selesai Otomatis',
+                  `Pesanan #${s.id} telah diselesaikan otomatis karena durasi sesi telah selesai.`
+                );
+              } else {
+                // No proofs → mark pending_completion, Kijo must upload proofs to get paid
+                await db.prepare("UPDATE sessions SET status = 'pending_completion', kijo_finished = 0 WHERE id = ? AND status = 'ongoing'").run(s.id);
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  s.user_id, 'order_update', 'Sesi Selesai — Unggah Bukti',
+                  `Durasi pesanan #${s.id} telah berakhir. Silakan unggah bukti pengerjaan (Sebelum & Sesudah) agar dana dapat dicairkan.`
+                );
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  userId, 'order_update', 'Durasi Sesi Berakhir',
+                  `Durasi pesanan #${s.id} telah berakhir. Menunggu Partner mengunggah bukti pengerjaan.`
+                );
+              }
+            })();
+          }
+        }
+      } catch (e) {
+        console.error('Auto-complete ongoing jokies sessions error:', e);
+      }
+
       const orders = (await db.prepare(`
-        SELECT s.*, u.full_name as kijo_name, u.username as kijo_username 
+        SELECT s.*, u.full_name as kijo_name, u.username as kijo_username,
+          (SELECT COUNT(*) FROM ratings r WHERE r.session_id = s.id) as has_rating
         FROM sessions s 
         JOIN users u ON s.user_id = u.id 
         WHERE s.jokies_id = ? 
@@ -1406,10 +1576,10 @@ async function startServer() {
         return res.status(400).json({ success: false, message: `Kijo ini hanya menerima pesanan maksimal ${kijo.pre_order_days ?? 7} hari ke depan.` });
       }
 
-      // Max slots check (0 = unlimited)
+      // Max slots check (0 = unlimited) — include pending_payment to prevent overbooking
       const effectiveMaxSlots = kijo.max_slots === null ? 3 : (kijo.max_slots || 0);
       if (effectiveMaxSlots > 0) {
-        const activeOrders = await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing')").get(kijoId) as any;
+        const activeOrders = await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing', 'pending_payment')").get(kijoId) as any;
         if ((activeOrders?.count ?? 0) >= effectiveMaxSlots) {
           return res.status(400).json({ success: false, message: 'Slot pesanan Kijo sudah penuh.' });
         }
@@ -1493,6 +1663,557 @@ async function startServer() {
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MIDTRANS PAYMENT & ESCROW SYSTEM
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Expose Midtrans Client Key to frontend
+  app.get('/api/payment/client-key', (_req, res) => {
+    res.json({ clientKey: MIDTRANS_CLIENT_KEY, isProduction: MIDTRANS_IS_PRODUCTION });
+  });
+
+  // Public endpoint for admin fee (not behind requireAdmin)
+  app.get('/api/settings/admin-fee', async (_req, res) => {
+    try {
+      const adminFee = (await db.prepare('SELECT value FROM settings WHERE `key` = ?').get('admin_fee')) as any;
+      res.json({ admin_fee: adminFee ? parseInt(adminFee.value) : 10 });
+    } catch {
+      res.json({ admin_fee: 10 });
+    }
+  });
+
+  // Create Midtrans Snap Transaction (with idempotency)
+  app.post('/api/payment/create-transaction', requireAuth, paymentLimiter, async (req: any, res: any) => {
+    const jokiesId = req.user.userId;
+    const { kijoId, title, price, quantity, player_count, duration, scheduledAt, gameTitle, rankStart, rankEnd, jokiesNickname, jokiesGameId, jokiesGameAccountId, categoryId, kijoGameAccountId: requestedKijoGameAccountId, dynamic_data, idempotencyKey } = req.body;
+
+    if (!idempotencyKey) {
+      return res.status(400).json({ success: false, message: 'idempotencyKey is required' });
+    }
+    if (!MIDTRANS_SERVER_KEY) {
+      return res.status(500).json({ success: false, message: 'Payment gateway belum dikonfigurasi.' });
+    }
+
+    try {
+      // IDEMPOTENCY CHECK: If this key already exists, return the existing transaction
+      const existing = await db.prepare(
+        'SELECT * FROM payment_transactions WHERE idempotency_key = ?'
+      ).get(idempotencyKey) as any;
+
+      if (existing) {
+        // Already created — return stored snap token
+        if (existing.snap_token) {
+          return res.json({
+            success: true,
+            snapToken: existing.snap_token,
+            snapRedirectUrl: existing.snap_redirect_url,
+            orderId: existing.order_id,
+            alreadyCreated: true,
+          });
+        }
+        // If somehow we have a record but no snap token, let it recreate below
+      }
+
+      // 1. Validate jokies
+      const jokies = await db.prepare('SELECT full_name, wallet_jokies, jokies_lock_until, email, phone FROM users WHERE id = ?').get(jokiesId) as any;
+      if (!jokies) return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
+
+      if (jokies.jokies_lock_until && new Date(jokies.jokies_lock_until) > new Date()) {
+        const lockTime = new Date(jokies.jokies_lock_until).toLocaleTimeString('id-ID');
+        return res.status(403).json({ success: false, message: `Tidak dapat melakukan pemesanan selama 60 menit setelah pembatalan (Hingga ${lockTime}).` });
+      }
+
+      // 2. Validate personal game account
+      const personalAccount = await db.prepare(`
+        SELECT id FROM game_accounts 
+        WHERE user_id = ? AND game_name LIKE ? AND account_type = 'personal' AND deleted = 0
+      `).get(jokiesId, `%${gameTitle}%`);
+      if (!personalAccount) {
+        return res.status(400).json({ success: false, message: 'Anda harus menambahkan detail akun game personal untuk game ini.' });
+      }
+
+      // 3. Validate Kijo
+      const kijo = await db.prepare('SELECT full_name, work_start, work_end, break_time, pre_order_days, max_slots FROM users WHERE id = ?').get(kijoId) as any;
+      if (!kijo) return res.status(404).json({ success: false, message: 'Kijo tidak ditemukan' });
+
+      // Pre-order days check
+      const scheduledDate = new Date(scheduledAt);
+      const now = new Date();
+      const maxDate = new Date();
+      maxDate.setDate(now.getDate() + (kijo.pre_order_days ?? 7));
+      maxDate.setHours(23, 59, 59, 999);
+      if (scheduledDate > maxDate) {
+        return res.status(400).json({ success: false, message: `Kijo ini hanya menerima pesanan maksimal ${kijo.pre_order_days ?? 7} hari ke depan.` });
+      }
+
+      // Lead time check: slot must be at least 20 minutes from now
+      const BOOKING_LEAD_TIME_MS = 20 * 60 * 1000;
+      if (scheduledDate.getTime() - now.getTime() < BOOKING_LEAD_TIME_MS) {
+        return res.status(400).json({ success: false, message: 'Pemesanan harus dilakukan minimal 20 menit sebelum waktu mulai.' });
+      }
+
+      // Max slots check — include pending_payment to prevent overbooking
+      const effectiveMaxSlots = kijo.max_slots === null ? 3 : (kijo.max_slots || 0);
+      if (effectiveMaxSlots > 0) {
+        const activeOrders = await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing', 'pending_payment')").get(kijoId) as any;
+        if ((activeOrders?.count ?? 0) >= effectiveMaxSlots) {
+          return res.status(400).json({ success: false, message: 'Slot pesanan Kijo sudah penuh.' });
+        }
+      }
+
+      // Time overlap check — prevent double-booking the same time slot
+      const sessionDurationMs = (duration || 1) * 60 * 60 * 1000;
+      const breakTime = kijo.break_time || 0;
+      const breakMs = breakTime * 60 * 60 * 1000;
+      const requestedStart = scheduledDate.getTime();
+      const requestedEnd = requestedStart + sessionDurationMs;
+
+      const existingSessions = (await db.prepare(
+        "SELECT scheduled_at, duration FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing', 'pending_payment') AND DATE(scheduled_at) = DATE(?)"
+      ).all(kijoId, scheduledAt)) as any[];
+
+      for (const s of existingSessions) {
+        const sStart = new Date(s.scheduled_at).getTime();
+        const sDuration = (s.duration || 1) * 60 * 60 * 1000;
+        const sEnd = sStart + sDuration;
+        const sEndWithBreak = sEnd + breakMs;
+        // Overlap: requested session overlaps with existing session + break buffer
+        // Also check reverse: existing session starts during requested session + break
+        if (requestedStart < sEndWithBreak && requestedEnd > sStart) {
+          return res.status(409).json({ success: false, message: 'Slot waktu ini sudah terisi. Silakan pilih waktu lain.' });
+        }
+      }
+
+      // 4. Calculate prices
+      const adminFeeSetting = await db.prepare('SELECT value FROM settings WHERE `key` = ?').get('admin_fee') as any;
+      const adminFeePercent = adminFeeSetting ? (parseInt(adminFeeSetting.value) || 10) : 10;
+      const basePrice = (price || 0) * (quantity || 1);
+      const adminFee = Math.round((basePrice * adminFeePercent) / 100);
+      const totalPrice = basePrice + adminFee;
+
+      // 5. Generate unique order ID for Midtrans
+      const orderId = `ACX-${Date.now()}-${jokiesId}`;
+
+      // 6. Create Snap transaction via Midtrans API
+      const snapPayload = {
+        transaction_details: {
+          order_id: orderId,
+          gross_amount: totalPrice,
+        },
+        item_details: [
+          {
+            id: `service-${categoryId || 'pkg'}`,
+            price: basePrice,
+            quantity: 1,
+            name: (title || 'Layanan Gaming').substring(0, 50),
+          },
+          {
+            id: 'admin-fee',
+            price: adminFee,
+            quantity: 1,
+            name: `Biaya Penanganan (${adminFeePercent}%)`,
+          },
+        ],
+        customer_details: {
+          first_name: jokies.full_name || 'Customer',
+          email: jokies.email || undefined,
+          phone: jokies.phone || undefined,
+        },
+        callbacks: {
+          finish: '/orders',
+        },
+      };
+
+      const authString = Buffer.from(MIDTRANS_SERVER_KEY + ':').toString('base64');
+      const snapResponse = await fetch(MIDTRANS_SNAP_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Basic ${authString}`,
+        },
+        body: JSON.stringify(snapPayload),
+      });
+
+      if (!snapResponse.ok) {
+        const errBody = await snapResponse.text();
+        console.error('[Midtrans] Snap creation failed:', snapResponse.status, errBody);
+        return res.status(502).json({ success: false, message: 'Gagal membuat transaksi pembayaran.' });
+      }
+
+      const snapData = await snapResponse.json() as { token: string; redirect_url: string };
+
+      // 7. Store payment transaction & booking data in DB (within transaction)
+      let createdSessionId: number | bigint = 0;
+      await db.transaction(async () => {
+        // Resolve jokies game account
+        let finalJokiesNickname = jokiesNickname;
+        let finalJokiesGameId = jokiesGameId;
+        let finalJokiesGameAccountId = jokiesGameAccountId;
+        let finalJokiesDynamicData = dynamic_data ? JSON.stringify(dynamic_data) : null;
+
+        if (jokiesGameAccountId) {
+          const acc = await db.prepare("SELECT nickname, game_id, dynamic_data FROM game_accounts WHERE id = ? AND user_id = ? AND account_type = 'personal' AND deleted = 0").get(jokiesGameAccountId, jokiesId) as any;
+          if (acc) {
+            finalJokiesNickname = acc.nickname;
+            finalJokiesGameId = acc.game_id;
+            if (!finalJokiesDynamicData) finalJokiesDynamicData = acc.dynamic_data;
+          }
+        }
+
+        // Resolve kijo game account
+        let kijoGameAccount: any = null;
+        if (requestedKijoGameAccountId) {
+          kijoGameAccount = await db.prepare("SELECT id, nickname, game_id, dynamic_data FROM game_accounts WHERE id = ? AND user_id = ? AND account_type = 'boosting' AND deleted = 0").get(requestedKijoGameAccountId, kijoId) as any;
+        }
+        if (!kijoGameAccount && categoryId) {
+          const category = await db.prepare('SELECT rank FROM categories WHERE id = ?').get(categoryId) as any;
+          if (category?.rank) {
+            kijoGameAccount = await db.prepare("SELECT id, nickname, game_id, dynamic_data FROM game_accounts WHERE user_id = ? AND game_name LIKE ? AND account_type = 'boosting' AND rank = ? AND deleted = 0").get(kijoId, `%${gameTitle}%`, category.rank) as any;
+          }
+        }
+        if (!kijoGameAccount) {
+          kijoGameAccount = await db.prepare("SELECT id, nickname, game_id, dynamic_data FROM game_accounts WHERE user_id = ? AND game_name LIKE ? AND account_type = 'boosting' AND deleted = 0").get(kijoId, `%${gameTitle}%`) as any;
+        }
+
+        const kijoNickname = kijoGameAccount?.nickname || '-';
+        const kijoGameId_val = kijoGameAccount?.game_id || '-';
+        const kijoGameAccountId_val = kijoGameAccount?.id || null;
+        const kijoDynamicData = kijoGameAccount?.dynamic_data || null;
+
+        // Create session in 'pending_payment' — will be activated by webhook
+        const insert = await db.prepare(`
+          INSERT INTO sessions (user_id, jokies_id, title, customer_name, price, admin_fee, total_price, quantity, player_count, scheduled_at, duration, status, game_title, rank_start, rank_end, payment_method, jokies_nickname, jokies_game_id, jokies_game_account_id, jokies_dynamic_data, kijo_nickname, kijo_game_id, kijo_game_account_id, kijo_dynamic_data, midtrans_order_id, escrow_status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_payment', ?, ?, ?, 'Midtrans', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none')
+        `).run(kijoId, jokiesId, title, jokies.full_name, price, adminFee, totalPrice, quantity || 1, player_count || 1, scheduledAt, duration || 1, gameTitle, rankStart || '', rankEnd || '', finalJokiesNickname, finalJokiesGameId, finalJokiesGameAccountId, finalJokiesDynamicData, kijoNickname, kijoGameId_val, kijoGameAccountId_val, kijoDynamicData, orderId);
+
+        const sessionId = insert.insertId;
+        createdSessionId = sessionId;
+
+        // Store payment transaction
+        await db.prepare(`
+          INSERT INTO payment_transactions (order_id, session_id, jokies_id, kijo_id, amount, admin_fee, total_amount, payment_status, escrow_status, snap_token, snap_redirect_url, idempotency_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'none', ?, ?, ?)
+        `).run(orderId, sessionId, jokiesId, kijoId, basePrice, adminFee, totalPrice, snapData.token, snapData.redirect_url, idempotencyKey);
+
+        // Update session with payment_transaction reference
+        await db.prepare('UPDATE sessions SET payment_transaction_id = LAST_INSERT_ID() WHERE id = ?').run(sessionId);
+      })();
+
+      res.json({
+        success: true,
+        snapToken: snapData.token,
+        snapRedirectUrl: snapData.redirect_url,
+        orderId,
+        sessionId: createdSessionId,
+      });
+
+    } catch (error) {
+      console.error('[Payment] Create transaction error:', error);
+      res.status(500).json({ success: false, message: 'Gagal membuat transaksi: ' + (error as any)?.message });
+    }
+  });
+
+  // Midtrans Webhook Notification Handler
+  // This endpoint MUST return 200 OK quickly to prevent webhook looping
+  app.post('/api/payment/webhook', webhookLimiter, async (req, res) => {
+    // Always respond 200 first to prevent Midtrans retry loops
+    const body = req.body;
+    res.status(200).json({ status: 'OK' });
+
+    try {
+      const { order_id, status_code, gross_amount, signature_key, transaction_status, fraud_status, transaction_id, payment_type } = body;
+
+      if (!order_id || !signature_key) {
+        console.warn('[Webhook] Missing order_id or signature_key');
+        return;
+      }
+
+      // 1. Verify signature: SHA512(order_id + status_code + gross_amount + server_key)
+      const expectedSignature = crypto
+        .createHash('sha512')
+        .update(order_id + status_code + gross_amount + MIDTRANS_SERVER_KEY)
+        .digest('hex');
+
+      if (signature_key !== expectedSignature) {
+        console.error('[Webhook] Signature mismatch for order:', order_id);
+        return;
+      }
+
+      // 2. Fetch the payment transaction
+      const payment = await db.prepare('SELECT * FROM payment_transactions WHERE order_id = ?').get(order_id) as any;
+      if (!payment) {
+        console.warn('[Webhook] No payment_transaction found for order_id:', order_id);
+        return;
+      }
+
+      // 3. Idempotency: skip if already processed to a terminal state
+      if (['settlement', 'capture', 'deny', 'cancel', 'expire', 'refund'].includes(payment.payment_status) && payment.payment_status !== 'pending') {
+        // Allow re-processing: expire -> settlement (late webhook reconciliation), settlement -> refund
+        const allowedTransitions: Record<string, string[]> = {
+          'expire': ['settlement', 'capture'], // Late payment arrived after auto-cancel
+          'settlement': ['refund'],
+        };
+        const allowed = allowedTransitions[payment.payment_status];
+        if (!allowed || !allowed.includes(transaction_status)) {
+          console.log('[Webhook] Skipping:', order_id, `${payment.payment_status} -> ${transaction_status}`);
+          return;
+        }
+        console.log('[Webhook] Reconciliation:', order_id, `${payment.payment_status} -> ${transaction_status}`);
+      }
+
+      // Store raw notification for audit
+      await db.prepare('UPDATE payment_transactions SET raw_notification = ?, midtrans_transaction_id = ?, payment_type = ? WHERE id = ?')
+        .run(JSON.stringify(body), transaction_id || null, payment_type || null, payment.id);
+
+      // 4. Process based on transaction_status
+      if (transaction_status === 'settlement' || (transaction_status === 'capture' && fraud_status === 'accept')) {
+        // ── PAYMENT SUCCESS: Activate order, set escrow to HELD ──
+        await db.transaction(async () => {
+          // Update payment transaction
+          await db.prepare(`
+            UPDATE payment_transactions SET payment_status = 'settlement', escrow_status = 'held', settled_at = NOW() WHERE id = ?
+          `).run(payment.id);
+
+          // Check current session status for reconciliation
+          const currentSession = await db.prepare('SELECT status FROM sessions WHERE id = ?').get(payment.session_id) as any;
+
+          if (currentSession?.status === 'pending_payment') {
+            // Normal flow: pending_payment -> upcoming
+            await db.prepare(`
+              UPDATE sessions SET status = 'upcoming', escrow_status = 'held', payment_method = ? WHERE id = ? AND status = 'pending_payment'
+            `).run(payment_type || 'Midtrans', payment.session_id);
+          } else if (currentSession?.status === 'cancelled') {
+            // Re-activate: session was auto-cancelled but payment actually succeeded (late webhook)
+            await db.prepare(`
+              UPDATE sessions SET status = 'upcoming', escrow_status = 'held', payment_method = ?, cancelled_at = NULL, cancelled_by = NULL, cancellation_reason = NULL WHERE id = ?
+            `).run(payment_type || 'Midtrans', payment.session_id);
+            console.log('[Webhook] Re-activated cancelled session:', payment.session_id, '— late settlement for order:', order_id);
+          }
+          // If session is already 'upcoming' or beyond, skip (idempotent)
+
+          // Notify Kijo about new order
+          const session = await db.prepare('SELECT title, customer_name FROM sessions WHERE id = ?').get(payment.session_id) as any;
+          await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+            payment.kijo_id, 'order_new', 'Pesanan Baru!',
+            `Anda menerima pesanan baru: ${session?.title || 'Pesanan'}. ID Pesanan: #${payment.session_id}`
+          );
+
+          // Notify Jokies payment success
+          await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+            payment.jokies_id, 'system', 'Pembayaran Berhasil!',
+            `Pembayaran untuk pesanan #${payment.session_id} sebesar Rp ${payment.total_amount.toLocaleString()} berhasil. Dana ditahan dalam Escrow.`
+          );
+
+          // Notify admins
+          const admins = await db.prepare("SELECT id FROM users WHERE role = 'admin'").all() as any[];
+          for (const admin of admins) {
+            await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+              admin.id, 'system', 'Pembayaran Masuk',
+              `Pembayaran Midtrans untuk pesanan #${payment.session_id} berhasil. Total: Rp ${payment.total_amount.toLocaleString()}. Escrow: HELD.`
+            );
+          }
+        })();
+
+        io.to('admin-room').emit('admin-refresh');
+        console.log('[Webhook] Settlement processed for order:', order_id);
+
+      } else if (['deny', 'cancel', 'expire'].includes(transaction_status)) {
+        // ── PAYMENT FAILED/EXPIRED: Cancel the pending session ──
+        await db.transaction(async () => {
+          await db.prepare(`UPDATE payment_transactions SET payment_status = ? WHERE id = ?`).run(transaction_status, payment.id);
+
+          // Cancel the pending_payment session
+          await db.prepare(`
+            UPDATE sessions SET status = 'cancelled', cancelled_by = 'system', cancellation_reason = ?, cancelled_at = NOW() WHERE id = ? AND status = 'pending_payment'
+          `).run(`Pembayaran ${transaction_status}`, payment.session_id);
+
+          // Notify jokies
+          const statusLabel = transaction_status === 'expire' ? 'kedaluwarsa' : (transaction_status === 'deny' ? 'ditolak' : 'dibatalkan');
+          await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+            payment.jokies_id, 'system', 'Pembayaran Gagal',
+            `Pembayaran untuk pesanan #${payment.session_id} ${statusLabel}. Silakan coba lagi.`
+          );
+        })();
+
+        io.to('admin-room').emit('admin-refresh');
+        console.log('[Webhook] Payment failed/expired for order:', order_id, transaction_status);
+
+      } else if (transaction_status === 'pending') {
+        // Payment is still pending (e.g. waiting for bank transfer)
+        await db.prepare(`UPDATE payment_transactions SET payment_status = 'pending' WHERE id = ?`).run(payment.id);
+        console.log('[Webhook] Payment pending for order:', order_id);
+      }
+
+    } catch (error) {
+      console.error('[Webhook] Error processing notification:', error);
+    }
+  });
+
+  // Check payment status
+  app.get('/api/payment/status/:orderId', requireAuth, paymentLimiter, async (req: any, res: any) => {
+    const { orderId } = req.params;
+    try {
+      const payment = await db.prepare(
+        'SELECT order_id, payment_status, escrow_status, session_id, total_amount, payment_type, settled_at FROM payment_transactions WHERE order_id = ?'
+      ).get(orderId) as any;
+
+      if (!payment) return res.status(404).json({ success: false, message: 'Transaksi tidak ditemukan' });
+
+      // Optionally verify with Midtrans API for real-time status
+      if (payment.payment_status === 'pending' && MIDTRANS_SERVER_KEY) {
+        try {
+          const authString = Buffer.from(MIDTRANS_SERVER_KEY + ':').toString('base64');
+          const mtRes = await fetch(`${MIDTRANS_API_URL}/${orderId}/status`, {
+            headers: { 'Authorization': `Basic ${authString}` },
+          });
+          if (mtRes.ok) {
+            const mtData = await mtRes.json() as any;
+            payment.midtrans_status = mtData.transaction_status;
+          }
+        } catch (err) {
+          console.warn('[Payment] Could not check Midtrans status:', err);
+        }
+      }
+
+      res.json({ success: true, payment });
+    } catch (error) {
+      console.error('[Payment] Status check error:', error);
+      res.status(500).json({ success: false });
+    }
+  });
+
+  // Resume payment: return snap token for a pending_payment session so user can re-open Snap popup
+  app.get('/api/payment/resume/:sessionId', requireAuth, paymentLimiter, async (req: any, res: any) => {
+    const userId = req.user.userId;
+    const { sessionId } = req.params;
+    try {
+      const session = await db.prepare("SELECT id, jokies_id, status, created_at FROM sessions WHERE id = ? AND status = 'pending_payment'").get(sessionId) as any;
+      if (!session) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan atau sudah tidak menunggu pembayaran.' });
+      if (session.jokies_id !== userId) return res.status(403).json({ success: false, message: 'Anda bukan pemilik pesanan ini.' });
+
+      // Check if payment has expired (15 min display window — user sees this)
+      const createdAt = new Date(session.created_at).getTime();
+      if (Date.now() - createdAt > PAYMENT_DISPLAY_TIMEOUT_MS) {
+        return res.status(410).json({ success: false, message: 'Waktu pembayaran telah habis. Pesanan akan dibatalkan otomatis.' });
+      }
+
+      const payment = await db.prepare("SELECT snap_token, snap_redirect_url, order_id FROM payment_transactions WHERE session_id = ? AND payment_status = 'pending'").get(sessionId) as any;
+      if (!payment || !payment.snap_token) {
+        return res.status(404).json({ success: false, message: 'Token pembayaran tidak ditemukan.' });
+      }
+
+      const remainingMs = PAYMENT_DISPLAY_TIMEOUT_MS - (Date.now() - createdAt);
+      res.json({
+        success: true,
+        snapToken: payment.snap_token,
+        snapRedirectUrl: payment.snap_redirect_url,
+        orderId: payment.order_id,
+        remainingSeconds: Math.max(0, Math.floor(remainingMs / 1000)),
+      });
+    } catch (error) {
+      console.error('[Payment] Resume error:', error);
+      res.status(500).json({ success: false });
+    }
+  });
+
+  // Verify payment: actively check Midtrans API and sync session status
+  // Called by frontend after Snap onSuccess to ensure order moves to 'upcoming'
+  app.post('/api/payment/verify/:sessionId', requireAuth, paymentLimiter, async (req: any, res: any) => {
+    const userId = req.user.userId;
+    const { sessionId } = req.params;
+    try {
+      const payment = await db.prepare(
+        'SELECT * FROM payment_transactions WHERE session_id = ?'
+      ).get(sessionId) as any;
+      if (!payment) return res.status(404).json({ success: false, message: 'Transaksi tidak ditemukan.' });
+
+      // Security: only the jokies who owns the order can verify
+      if (payment.jokies_id !== userId) return res.status(403).json({ success: false, message: 'Akses ditolak.' });
+
+      // If already settled, return success immediately
+      if (payment.payment_status === 'settlement') {
+        return res.json({ success: true, status: 'settlement', message: 'Pembayaran sudah dikonfirmasi.' });
+      }
+
+      // If not pending or expire, nothing to verify
+      if (payment.payment_status !== 'pending' && payment.payment_status !== 'expire') {
+        return res.json({ success: false, status: payment.payment_status, message: `Status pembayaran: ${payment.payment_status}` });
+      }
+
+      // Query Midtrans API for real-time status
+      if (!MIDTRANS_SERVER_KEY) {
+        return res.status(500).json({ success: false, message: 'Server key tidak dikonfigurasi.' });
+      }
+
+      const authString = Buffer.from(MIDTRANS_SERVER_KEY + ':').toString('base64');
+      const mtRes = await fetch(`${MIDTRANS_API_URL}/${payment.order_id}/status`, {
+        headers: { 'Authorization': `Basic ${authString}`, 'Content-Type': 'application/json' },
+      });
+
+      if (!mtRes.ok) {
+        console.warn('[Verify] Midtrans API error:', mtRes.status);
+        return res.json({ success: false, status: 'pending', message: 'Menunggu konfirmasi dari Midtrans. Coba lagi dalam beberapa saat.' });
+      }
+
+      const mtData = await mtRes.json() as any;
+      const txnStatus = mtData.transaction_status;
+      const fraudStatus = mtData.fraud_status;
+
+      if (txnStatus === 'settlement' || (txnStatus === 'capture' && fraudStatus === 'accept')) {
+        // Payment confirmed by Midtrans — run settlement + reconciliation logic
+        await db.transaction(async () => {
+          await db.prepare(`
+            UPDATE payment_transactions SET payment_status = 'settlement', escrow_status = 'held', settled_at = NOW(), payment_type = ?, midtrans_transaction_id = ?, raw_notification = ? WHERE id = ?
+          `).run(mtData.payment_type || 'Midtrans', mtData.transaction_id || null, JSON.stringify(mtData), payment.id);
+
+          // Check current session status for reconciliation
+          const currentSession = await db.prepare('SELECT status FROM sessions WHERE id = ?').get(payment.session_id) as any;
+
+          if (currentSession?.status === 'pending_payment') {
+            await db.prepare(`
+              UPDATE sessions SET status = 'upcoming', escrow_status = 'held', payment_method = ? WHERE id = ? AND status = 'pending_payment'
+            `).run(mtData.payment_type || 'Midtrans', payment.session_id);
+          } else if (currentSession?.status === 'cancelled') {
+            // Re-activate: was auto-cancelled but payment actually succeeded
+            await db.prepare(`
+              UPDATE sessions SET status = 'upcoming', escrow_status = 'held', payment_method = ?, cancelled_at = NULL, cancelled_by = NULL, cancellation_reason = NULL WHERE id = ?
+            `).run(mtData.payment_type || 'Midtrans', payment.session_id);
+            console.log('[Verify] Re-activated cancelled session:', payment.session_id);
+          }
+
+          const session = await db.prepare('SELECT title FROM sessions WHERE id = ?').get(payment.session_id) as any;
+          await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+            payment.kijo_id, 'order_new', 'Pesanan Baru!',
+            `Anda menerima pesanan baru: ${session?.title || 'Pesanan'}. ID Pesanan: #${payment.session_id}`
+          );
+          await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+            payment.jokies_id, 'system', 'Pembayaran Berhasil!',
+            `Pembayaran untuk pesanan #${payment.session_id} sebesar Rp ${payment.total_amount.toLocaleString()} berhasil. Dana ditahan dalam Escrow.`
+          );
+        })();
+
+        io.to('admin-room').emit('admin-refresh');
+        console.log('[Verify] Settlement confirmed via API for session:', sessionId);
+        return res.json({ success: true, status: 'settlement', message: 'Pembayaran berhasil dikonfirmasi!' });
+      } else if (['deny', 'cancel', 'expire'].includes(txnStatus)) {
+        // Payment failed — cancel session
+        await db.transaction(async () => {
+          await db.prepare('UPDATE payment_transactions SET payment_status = ? WHERE id = ?').run(txnStatus, payment.id);
+          await db.prepare("UPDATE sessions SET status = 'cancelled', cancelled_by = 'system', cancellation_reason = ?, cancelled_at = NOW() WHERE id = ? AND status = 'pending_payment'")
+            .run(`Pembayaran ${txnStatus}`, payment.session_id);
+        })();
+
+        return res.json({ success: false, status: txnStatus, message: `Pembayaran ${txnStatus}.` });
+      } else {
+        // Still pending
+        return res.json({ success: false, status: 'pending', message: 'Pembayaran masih diproses. Coba lagi dalam beberapa saat.' });
+      }
+    } catch (error) {
+      console.error('[Verify] Error:', error);
+      res.status(500).json({ success: false, message: 'Gagal memverifikasi pembayaran.' });
+    }
+  });
+
   // API: Cancel Order (Jokies or Kijo) - Now sends to Admin for verification
   app.post('/api/orders/cancel', requireAuth, async (req: any, res: any) => {
     const authUserId = req.user.userId;
@@ -1528,14 +2249,19 @@ async function startServer() {
         const diffMinutes = (scheduledAt - now) / (1000 * 60);
 
         if (diffMinutes >= 60) {
-          // Auto-cancel with partial refund (admin fee lost)
+          // Auto-cancel with partial refund (admin fee lost) — Jokies cancel
           await db.transaction(async () => {
-            await db.prepare("UPDATE sessions SET status = 'cancelled', cancellation_reason = ?, cancelled_at = NOW(), cancelled_by = 'jokies' WHERE id = ?").run(reason, orderId);
-            // Partial refund: price only (admin fee lost)
+            await db.prepare("UPDATE sessions SET status = 'cancelled', escrow_status = 'partial_refund', cancellation_reason = ?, cancelled_at = NOW(), cancelled_by = 'jokies' WHERE id = ?").run(reason, orderId);
+            // Partial refund: price only (admin fee retained by admin)
             if (order.payment_method !== 'Simulasi') {
               await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(order.price, order.jokies_id);
             }
-            // Set jokies lock
+            // Update escrow in payment_transactions if exists
+            if (order.payment_transaction_id) {
+              await db.prepare("UPDATE payment_transactions SET escrow_status = 'partial_refund', refund_amount = ?, refund_reason = ?, refunded_by = 'jokies', refunded_at = NOW() WHERE id = ?")
+                .run(order.price, reason, order.payment_transaction_id);
+            }
+            // Set jokies lock (1 hour)
             await db.prepare("UPDATE users SET jokies_lock_until = DATE_ADD(NOW(), INTERVAL 60 MINUTE) WHERE id = ?").run(order.jokies_id);
             // Notify Kijo
             await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
@@ -1591,12 +2317,20 @@ async function startServer() {
       if (order.cancelled_by === 'kijo' && isKijo) return res.status(400).json({ success: false, message: 'Anda yang mengajukan pembatalan, tunggu persetujuan pihak lain.' });
 
       await db.transaction(async () => {
-        await db.prepare("UPDATE sessions SET status = 'cancelled' WHERE id = ?").run(orderId);
+        const escrowLabel = order.cancelled_by === 'jokies' ? 'partial_refund' : 'refunded';
+        await db.prepare("UPDATE sessions SET status = 'cancelled', escrow_status = ? WHERE id = ?").run(escrowLabel, orderId);
 
         // Refund logic: Jokies cancel = partial (price only), Kijo cancel = full (total_price)
         if (order.payment_method !== 'Simulasi') {
           const refundAmount = order.cancelled_by === 'jokies' ? order.price : order.total_price;
           await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(refundAmount, order.jokies_id);
+        }
+
+        // Update payment_transactions escrow
+        if (order.payment_transaction_id) {
+          const refundAmount = order.cancelled_by === 'jokies' ? order.price : order.total_price;
+          await db.prepare("UPDATE payment_transactions SET escrow_status = ?, refund_amount = ?, refunded_by = ?, refunded_at = NOW() WHERE id = ?")
+            .run(escrowLabel, refundAmount, order.cancelled_by, order.payment_transaction_id);
         }
 
         // Set jokies lock if jokies initiated
@@ -1675,6 +2409,43 @@ async function startServer() {
     }
   });
 
+  // API: Revert Cancellation (cancel-the-cancel)
+  app.post('/api/orders/revert-cancel', requireAuth, async (req: any, res: any) => {
+    const authUserId = req.user.userId;
+    const { orderId } = req.body;
+    try {
+      const order = await db.prepare('SELECT * FROM sessions WHERE id = ?').get(orderId) as any;
+      if (!order) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
+      if (order.status !== 'pending_cancellation') {
+        return res.status(400).json({ success: false, message: 'Pesanan tidak dalam status menunggu pembatalan' });
+      }
+      // Only the initiator can revert, and only before escalation
+      const isJokies = order.jokies_id === authUserId;
+      const isKijo = order.user_id === authUserId;
+      if (!isJokies && !isKijo) return res.status(403).json({ success: false, message: 'Anda bukan peserta pesanan ini' });
+      if (order.cancelled_by === 'jokies' && !isJokies) return res.status(400).json({ success: false, message: 'Hanya pihak yang mengajukan yang bisa membatalkan permintaan ini.' });
+      if (order.cancelled_by === 'kijo' && !isKijo) return res.status(400).json({ success: false, message: 'Hanya pihak yang mengajukan yang bisa membatalkan permintaan ini.' });
+      if (order.cancel_escalated) return res.status(400).json({ success: false, message: 'Tidak bisa membatalkan, sudah dieskalasi ke Admin.' });
+
+      // Restore to previous status
+      const restoreStatus = order.started_at ? 'ongoing' : 'upcoming';
+      await db.prepare("UPDATE sessions SET status = ?, cancelled_by = NULL, cancellation_reason = NULL, cancelled_at = NULL, cancel_escalated = 0 WHERE id = ?").run(restoreStatus, orderId);
+
+      const otherUserId = isJokies ? order.user_id : order.jokies_id;
+      const callerLabel = isJokies ? 'Pelanggan' : 'Partner';
+      await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+        otherUserId, 'system', 'Pembatalan Dibatalkan',
+        `${callerLabel} membatalkan permintaan pembatalan pesanan #${orderId}. Pesanan dilanjutkan.`
+      );
+
+      io.to('admin-room').emit('admin-refresh');
+      res.json({ success: true, message: 'Permintaan pembatalan berhasil dibatalkan. Pesanan dilanjutkan.' });
+    } catch (error) {
+      console.error('Revert Cancel Error:', error);
+      res.status(500).json({ success: false });
+    }
+  });
+
   // API: Admin Approve Cancellation (for escalated disputes)
   app.post('/api/admin/sessions/:id/approve-cancel', requireAuth, async (req: any, res: any) => {
     if (req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Admin only' });
@@ -1684,7 +2455,8 @@ async function startServer() {
       if (!order) return res.status(404).json({ success: false });
 
       await db.transaction(async () => {
-        await db.prepare("UPDATE sessions SET status = 'cancelled', cancel_escalated = 0 WHERE id = ?").run(id);
+        const escrowLabel = order.cancelled_by === 'jokies' ? 'partial_refund' : 'refunded';
+        await db.prepare("UPDATE sessions SET status = 'cancelled', escrow_status = ?, cancel_escalated = 0 WHERE id = ?").run(escrowLabel, id);
 
         // Refund logic: jokies cancel = partial, kijo/admin cancel = full
         if (order.payment_method !== 'Simulasi') {
@@ -1693,6 +2465,13 @@ async function startServer() {
           } else {
             await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(order.total_price, order.jokies_id);
           }
+        }
+
+        // Update escrow in payment_transactions
+        if (order.payment_transaction_id) {
+          const refundAmount = order.cancelled_by === 'jokies' ? order.price : order.total_price;
+          await db.prepare("UPDATE payment_transactions SET escrow_status = ?, refund_amount = ?, refunded_by = ?, refunded_at = NOW() WHERE id = ?")
+            .run(escrowLabel, refundAmount, order.cancelled_by || 'admin', order.payment_transaction_id);
         }
 
         // Notify both
@@ -1804,10 +2583,15 @@ async function startServer() {
       if (!order) return res.status(404).json({ success: false });
 
       await db.transaction(async () => {
-        await db.prepare("UPDATE sessions SET status = 'completed', completed_at = NOW() WHERE id = ?").run(id);
+        await db.prepare("UPDATE sessions SET status = 'completed', escrow_status = 'released', completed_at = NOW() WHERE id = ?").run(id);
 
-        // Transfer funds to Kijo balance_active
+        // Release escrow: Transfer funds to Kijo balance_active
         await db.prepare('UPDATE users SET balance_active = balance_active + ? WHERE id = ?').run(order.price, order.user_id);
+
+        // Update payment_transactions escrow -> released
+        if (order.payment_transaction_id) {
+          await db.prepare("UPDATE payment_transactions SET escrow_status = 'released', released_at = NOW() WHERE id = ?").run(order.payment_transaction_id);
+        }
 
         // Set Break Time
         const breakUntil = await calculateBreakUntil(order.user_id);
@@ -1817,7 +2601,7 @@ async function startServer() {
 
         // Notify both
         await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-          order.user_id, 'order_completed', 'Verifikasi Selesai & Dana Cair!', `Admin telah memverifikasi pesanan #${id}. Saldo Rp ${order.price.toLocaleString()} telah ditambahkan.`
+          order.user_id, 'order_completed', 'Verifikasi Selesai & Dana Cair!', `Admin telah memverifikasi pesanan #${id}. Saldo Rp ${order.price.toLocaleString()} telah ditambahkan ke Saldo Aktif.`
         );
         await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
           order.jokies_id, 'order_completed', 'Pesanan Selesai', `Admin telah memverifikasi penyelesaian pesanan #${id}.`
@@ -1830,7 +2614,9 @@ async function startServer() {
     }
   });
 
-  // API: Jokies Confirms Order as Finished
+  // API: Jokies Confirms/Completes Order
+  // Jokies can finish from 'ongoing' (direct) or 'pending_completion' (after Kijo requested).
+  // Jokies is the authority — no kijo_finished requirement.
   app.post('/api/jokies/confirm-finish', requireAuth, async (req: any, res: any) => {
     const jokiesId = req.user.userId;
     const { orderId } = req.body;
@@ -1840,13 +2626,21 @@ async function startServer() {
       if (order.status === 'completed') {
         return res.status(400).json({ success: false, message: 'Pesanan sudah selesai' });
       }
-      if (!order.kijo_finished) return res.status(400).json({ success: false, message: 'Partner belum menandai pesanan ini selesai' });
+      // Valid statuses: ongoing (direct finish by Jokies) or pending_completion (Kijo already requested)
+      if (!['ongoing', 'pending_completion'].includes(order.status)) {
+        return res.status(400).json({ success: false, message: 'Pesanan tidak dalam status yang valid untuk diselesaikan' });
+      }
 
       await db.transaction(async () => {
-        await db.prepare("UPDATE sessions SET jokies_finished = 1, status = 'completed', completed_at = NOW() WHERE id = ?").run(orderId);
+        await db.prepare("UPDATE sessions SET jokies_finished = 1, status = 'completed', escrow_status = 'released', completed_at = NOW() WHERE id = ?").run(orderId);
         
-        // Transfer funds to Kijo balance_active
+        // Release escrow: Transfer funds to Kijo balance_active
         await db.prepare('UPDATE users SET balance_active = balance_active + ? WHERE id = ?').run(order.price, order.user_id);
+
+        // Update payment_transactions escrow -> released
+        if (order.payment_transaction_id) {
+          await db.prepare("UPDATE payment_transactions SET escrow_status = 'released', released_at = NOW() WHERE id = ?").run(order.payment_transaction_id);
+        }
         
         // Set Break Time
         const breakUntil = await calculateBreakUntil(order.user_id);
@@ -2215,8 +3009,8 @@ async function startServer() {
       const kijo = (await db.prepare('SELECT work_start, work_end, break_start, break_end, break_time, weekly_days, pre_order_days, break_until FROM users WHERE id = ?').get(id)) as any;
       if (!kijo) return res.status(404).json({ success: false, message: 'Kijo tidak ditemukan' });
 
-      // Get existing sessions for this date
-      const sessions = (await db.prepare("SELECT scheduled_at, duration FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing') AND scheduled_at LIKE ?").all(id, `${date}%`)) as any[];
+      // Get existing sessions for this date (include pending_payment to lock slots during checkout)
+      const sessions = (await db.prepare("SELECT scheduled_at, duration FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing', 'pending_payment') AND scheduled_at LIKE ?").all(id, `${date}%`)) as any[];
 
       // Get holidays for this kijo (for date picker to disable holiday days)
       const holidays = (await db.prepare('SELECT start_date, end_date FROM holidays WHERE user_id = ? ORDER BY start_date ASC').all(id)) as any[];
@@ -2408,6 +3202,80 @@ async function startServer() {
       console.error('Auto-cancel expired sessions error:', e);
     }
 
+    // Auto-cancel: pending_payment sessions older than 20 minutes (15 min Midtrans + 5 min buffer)
+    try {
+      const now2 = new Date();
+      const pendingPayments = (await db.prepare(`
+        SELECT id, jokies_id, created_at FROM sessions WHERE user_id = ? AND status = 'pending_payment'
+      `).all(userId)) as any[];
+      for (const s of pendingPayments) {
+        const createdAt = new Date(s.created_at).getTime();
+        if (now2.getTime() - createdAt > PAYMENT_TIMEOUT_MS) {
+          await db.transaction(async () => {
+            await db.prepare("UPDATE sessions SET status = 'cancelled', cancelled_at = NOW(), cancelled_by = 'system', cancellation_reason = 'Otomatis dibatalkan: pembayaran tidak diselesaikan dalam waktu yang ditentukan' WHERE id = ? AND status = 'pending_payment'").run(s.id);
+            await db.prepare("UPDATE payment_transactions SET payment_status = 'expire', escrow_status = 'none', updated_at = NOW() WHERE session_id = ? AND payment_status = 'pending'").run(s.id);
+            if (s.jokies_id) {
+              await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                s.jokies_id, 'order_update', 'Pembayaran Kedaluwarsa',
+                `Pesanan #${s.id} dibatalkan otomatis karena pembayaran tidak diselesaikan dalam waktu yang ditentukan.`
+              );
+            }
+          })();
+        }
+      }
+    } catch (e) {
+      console.error('Auto-cancel pending_payment kijo sessions error:', e);
+    }
+
+    // Auto-complete: ongoing sessions past scheduled_at + duration (unattended)
+    try {
+      const nowAC = new Date();
+      const ongoingSessions = (await db.prepare(`
+        SELECT id, jokies_id, scheduled_at, duration, screenshot_start, screenshot_end, total_price, price, admin_fee, escrow_status, payment_transaction_id
+        FROM sessions WHERE user_id = ? AND status = 'ongoing'
+      `).all(userId)) as any[];
+      for (const s of ongoingSessions) {
+        const endTime = new Date(new Date(s.scheduled_at).getTime() + (s.duration || 1) * 60 * 60 * 1000);
+        if (nowAC > endTime) {
+          const hasProofs = !!(s.screenshot_start && s.screenshot_end);
+          await db.transaction(async () => {
+            if (hasProofs) {
+              await db.prepare("UPDATE sessions SET status = 'completed', completed_at = NOW(), kijo_finished = 1, jokies_finished = 1, escrow_status = 'released' WHERE id = ? AND status = 'ongoing'").run(s.id);
+              const kijoEarnings = s.price || (s.total_price - (s.admin_fee || 0));
+              await db.prepare('UPDATE users SET balance_active = balance_active + ? WHERE id = ?').run(kijoEarnings, userId);
+              if (s.payment_transaction_id) {
+                await db.prepare("UPDATE payment_transactions SET escrow_status = 'released', released_at = NOW(), updated_at = NOW() WHERE id = ?").run(s.payment_transaction_id);
+              }
+              await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                userId, 'order_update', 'Pesanan Selesai Otomatis',
+                `Pesanan #${s.id} telah diselesaikan otomatis. Dana Rp ${(kijoEarnings || 0).toLocaleString()} dicairkan ke Saldo Aktif Anda.`
+              );
+              if (s.jokies_id) {
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  s.jokies_id, 'order_update', 'Pesanan Selesai Otomatis',
+                  `Pesanan #${s.id} telah diselesaikan otomatis karena durasi sesi telah selesai.`
+                );
+              }
+            } else {
+              await db.prepare("UPDATE sessions SET status = 'pending_completion', kijo_finished = 0 WHERE id = ? AND status = 'ongoing'").run(s.id);
+              await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                userId, 'order_update', 'Sesi Selesai — Unggah Bukti',
+                `Durasi pesanan #${s.id} telah berakhir. Silakan unggah bukti pengerjaan (Sebelum & Sesudah) agar dana dapat dicairkan.`
+              );
+              if (s.jokies_id) {
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  s.jokies_id, 'order_update', 'Durasi Sesi Berakhir',
+                  `Durasi pesanan #${s.id} telah berakhir. Menunggu Partner mengunggah bukti pengerjaan.`
+                );
+              }
+            }
+          })();
+        }
+      }
+    } catch (e) {
+      console.error('Auto-complete ongoing kijo sessions error:', e);
+    }
+
     // Notification check for sessions starting in 10 mins
     try {
       const now = new Date();
@@ -2542,25 +3410,54 @@ async function startServer() {
       const isKijo = user.role === 'kijo';
       
       const ratings = isKijo 
-        ? await db.prepare('SELECT * FROM ratings WHERE user_id = ? ORDER BY created_at DESC').all(userId)
-        : await db.prepare('SELECT * FROM ratings WHERE jokies_id = ? ORDER BY created_at DESC').all(userId);
+        ? await db.prepare(`
+            SELECT r.*, u.username as jokies_username, u.full_name as jokies_name, u.avatar_url as jokies_avatar
+            FROM ratings r
+            LEFT JOIN users u ON r.jokies_id = u.id
+            WHERE r.user_id = ? ORDER BY r.created_at DESC`).all(userId)
+        : await db.prepare(`
+            SELECT r.*, u.username as kijo_username, u.full_name as kijo_name, u.avatar_url as kijo_avatar
+            FROM ratings r
+            LEFT JOIN users u ON r.user_id = u.id
+            WHERE r.jokies_id = ? ORDER BY r.created_at DESC`).all(userId);
         
       const gameAccounts = await db.prepare('SELECT * FROM game_accounts WHERE user_id = ? AND deleted = 0').all(userId);
       const transactions = await db.prepare('SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20').all(userId);
       const withdrawals = await db.prepare('SELECT * FROM withdrawals WHERE user_id = ? ORDER BY created_at DESC').all(userId);
       
-      // Monthly Stats
-      const now = new Date();
-      const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-      
+      // Lifetime Stats
       const monthlyOrders = isKijo
-        ? await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND status = 'completed' AND scheduled_at >= ?").get(userId, firstDayOfMonth) as { count: number }
-        : await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE jokies_id = ? AND status = 'completed' AND scheduled_at >= ?").get(userId, firstDayOfMonth) as { count: number };
+        ? await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND status = 'completed'").get(userId) as { count: number }
+        : await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE jokies_id = ? AND status = 'completed'").get(userId) as { count: number };
+
+      const cancelledOrders = isKijo
+        ? await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND status = 'cancelled'").get(userId) as { count: number }
+        : await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE jokies_id = ? AND status = 'cancelled'").get(userId) as { count: number };
       
       // Total Booked
       const totalBooked = isKijo
         ? await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND status = 'completed'").get(userId) as { count: number }
         : await db.prepare("SELECT COUNT(*) as count FROM sessions WHERE jokies_id = ? AND status = 'completed'").get(userId) as { count: number };
+
+      // Pending earnings for Kijo: sum of prices for orders not yet completed
+      if (isKijo) {
+        const pendingResult = await db.prepare(
+          "SELECT COALESCE(SUM(price), 0) as total FROM sessions WHERE user_id = ? AND status IN ('upcoming', 'ongoing', 'pending_completion')"
+        ).get(userId) as { total: number };
+        user.balance_held = pendingResult.total;
+
+        // Saldo Refund: total refunded escrow for Kijo
+        const refundResult = await db.prepare(
+          "SELECT COALESCE(SUM(pt.total_amount), 0) as total FROM payment_transactions pt JOIN sessions s ON pt.session_id = s.id WHERE s.user_id = ? AND pt.escrow_status IN ('refunded', 'partial_refund')"
+        ).get(userId) as { total: number };
+        user.balance_refund = refundResult.total;
+      } else {
+        // Saldo Refund for Jokies: total refunded to their wallet from cancelled orders
+        const refundResult = await db.prepare(
+          "SELECT COALESCE(SUM(pt.total_amount), 0) as total FROM payment_transactions pt JOIN sessions s ON pt.session_id = s.id WHERE s.jokies_id = ? AND pt.escrow_status IN ('refunded', 'partial_refund')"
+        ).get(userId) as { total: number };
+        user.balance_refund = refundResult.total;
+      }
 
       // Active Games (Games that have at least one category OR is the verified game)
       const activeGames = await db.prepare(`
@@ -2592,6 +3489,7 @@ async function startServer() {
         savedPaymentMethods,
         stats: {
           monthlyOrders: monthlyOrders.count,
+          cancelledOrders: cancelledOrders.count,
           totalBooked: totalBooked.count
         }
       });
@@ -3402,17 +4300,38 @@ async function startServer() {
   // API: Get Admin Sessions (Monitoring)
   app.get('/api/admin/sessions', async (req, res) => {
     try {
-      const upcoming = await db.prepare("SELECT * FROM sessions WHERE status = 'upcoming' ORDER BY scheduled_at ASC").all();
-      const ongoing = await db.prepare("SELECT * FROM sessions WHERE status IN ('ongoing', 'pending_completion', 'pending_cancellation') AND (cancel_escalated = 0 OR cancel_escalated IS NULL) ORDER BY scheduled_at ASC").all();
+      const upcoming = await db.prepare("SELECT s.*, uj.full_name as jokies_name, uk.full_name as kijo_name FROM sessions s LEFT JOIN users uj ON s.jokies_id = uj.id LEFT JOIN users uk ON s.user_id = uk.id WHERE s.status = 'upcoming' ORDER BY s.scheduled_at ASC").all();
+      const ongoing = await db.prepare("SELECT s.*, uj.full_name as jokies_name, uk.full_name as kijo_name FROM sessions s LEFT JOIN users uj ON s.jokies_id = uj.id LEFT JOIN users uk ON s.user_id = uk.id WHERE s.status IN ('ongoing', 'pending_completion', 'pending_cancellation') AND (s.cancel_escalated = 0 OR s.cancel_escalated IS NULL) ORDER BY s.scheduled_at ASC").all();
       const disputes = await db.prepare(`
-        SELECT * FROM sessions WHERE
-          (status = 'cancelled' AND cancellation_reason IS NOT NULL)
-          OR (status = 'pending_cancellation' AND cancel_escalated = 1)
-        ORDER BY cancelled_at DESC
+        SELECT s.*, uj.full_name as jokies_name, uk.full_name as kijo_name
+        FROM sessions s
+        LEFT JOIN users uj ON s.jokies_id = uj.id
+        LEFT JOIN users uk ON s.user_id = uk.id
+        WHERE (s.status = 'cancelled' AND s.cancellation_reason IS NOT NULL)
+          OR (s.status = 'pending_cancellation' AND s.cancel_escalated = 1)
+        ORDER BY s.cancelled_at DESC
       `).all();
-      const history = await db.prepare("SELECT * FROM sessions WHERE status = 'completed' ORDER BY completed_at DESC LIMIT 50").all();
+      const history = await db.prepare("SELECT s.*, uj.full_name as jokies_name, uk.full_name as kijo_name FROM sessions s LEFT JOIN users uj ON s.jokies_id = uj.id LEFT JOIN users uk ON s.user_id = uk.id WHERE s.status = 'completed' ORDER BY s.completed_at DESC LIMIT 50").all();
 
       res.json({ upcoming, ongoing, disputes, history });
+    } catch (error) {
+      res.status(500).json({ success: false });
+    }
+  });
+
+  // API: Get dispute chat history (for admin)
+  app.get('/api/admin/sessions/:id/chat', requireAuth, async (req: any, res: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ success: false });
+    try {
+      const messages = await db.prepare(`
+        SELECT oc.*, u.full_name as sender_name, u.username as sender_username
+        FROM order_chats oc
+        LEFT JOIN users u ON oc.sender_id = u.id
+        WHERE oc.session_id = ?
+        ORDER BY oc.created_at ASC
+        LIMIT 200
+      `).all(req.params.id);
+      res.json(messages);
     } catch (error) {
       res.status(500).json({ success: false });
     }
@@ -3514,24 +4433,29 @@ async function startServer() {
     }
   });
 
-  // API: Admin Force Cancel Session
+  // API: Admin Force Cancel Session — always full refund
   app.post('/api/admin/sessions/:id/force-cancel', async (req, res) => {
     const { id } = req.params;
-    const { refund } = req.body; // boolean: whether to refund jokies
     try {
       const session = await db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as any;
       if (!session) return res.status(404).json({ error: 'Sesi tidak ditemukan' });
-      if (!['upcoming', 'ongoing', 'pending_cancellation'].includes(session.status)) {
+      if (!['upcoming', 'ongoing', 'pending_cancellation', 'pending_payment'].includes(session.status)) {
         return res.status(400).json({ error: 'Sesi sudah selesai atau dibatalkan' });
       }
 
       await db.transaction(async () => {
-        await db.prepare("UPDATE sessions SET status = 'cancelled', cancelled_by = 'admin' WHERE id = ?").run(id);
-        if (refund) {
+        await db.prepare("UPDATE sessions SET status = 'cancelled', escrow_status = 'refunded', cancelled_by = 'admin', cancelled_at = NOW(), cancellation_reason = 'Dibatalkan oleh Admin' WHERE id = ?").run(id);
+        // Admin force-cancel always gives full refund (total_price)
+        if (session.payment_method !== 'Simulasi') {
           await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(session.total_price, session.jokies_id);
         }
+        // Update escrow in payment_transactions
+        if (session.payment_transaction_id) {
+          await db.prepare("UPDATE payment_transactions SET escrow_status = 'refunded', refund_amount = ?, refunded_by = 'admin', refunded_at = NOW() WHERE id = ?")
+            .run(session.total_price, session.payment_transaction_id);
+        }
         await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
-          session.jokies_id, 'system', 'Pesanan Dibatalkan Admin', `Pesanan #${id} telah dibatalkan oleh Admin Minox.${refund ? ` Dana Rp ${session.total_price.toLocaleString()} telah dikembalikan.` : ''}`
+          session.jokies_id, 'system', 'Pesanan Dibatalkan Admin', `Pesanan #${id} telah dibatalkan oleh Admin Minox. Refund penuh Rp ${session.total_price.toLocaleString()} telah dikembalikan ke Saldo Refund.`
         );
         await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
           session.user_id, 'system', 'Pesanan Dibatalkan Admin', `Pesanan #${id} telah dibatalkan oleh Admin Minox.`
@@ -4094,10 +5018,13 @@ async function startServer() {
 
   // ===== ORDER CHAT API =====
 
-  // GET /api/orders/:sessionId/chat - Get chat messages for an order
+  // GET /api/orders/:sessionId/chat - Get chat messages for an order (paginated)
   app.get('/api/orders/:sessionId/chat', requireAuth, async (req: any, res: any) => {
     const sessionId = parseInt(req.params.sessionId, 10);
     const userId = req.user.userId;
+    const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+    const limit = 20;
+    const offset = (page - 1) * limit;
 
     try {
       // Verify the session exists and user is a participant
@@ -4116,19 +5043,111 @@ async function startServer() {
         return res.status(403).json({ success: false, message: 'Chat belum tersedia untuk pesanan pending' });
       }
 
-      // Fetch messages with sender username
+      // Get total count
+      const countRow = await db.prepare('SELECT COUNT(*) as total FROM order_chats WHERE session_id = ?').get(sessionId) as any;
+      const total = countRow?.total || 0;
+      const totalPages = Math.ceil(total / limit);
+
+      // Fetch messages with sender username, avatar, read receipt — reverse pagination (newest first internally, but return ASC)
+      // We offset from the end for page > 1
       const messages = await db.prepare(`
-        SELECT oc.id, oc.session_id, oc.sender_id, oc.message, oc.created_at, u.username AS sender_username
+        SELECT oc.id, oc.session_id, oc.sender_id, oc.message, oc.created_at, oc.status as read_status, oc.read_at,
+               u.username AS sender_username, u.avatar_url AS sender_avatar
         FROM order_chats oc
         JOIN users u ON u.id = oc.sender_id
         WHERE oc.session_id = ?
-        ORDER BY oc.created_at ASC
-      `).all(sessionId) as any[];
+        ORDER BY oc.created_at DESC
+        LIMIT ? OFFSET ?
+      `).all(sessionId, limit, offset) as any[];
 
-      res.json({ success: true, messages });
+      // Reverse so oldest first in the returned array
+      messages.reverse();
+
+      // Check if session is locked (not in active statuses)
+      const ACTIVE_STATUSES = ['upcoming', 'ongoing', 'pending_completion', 'pending_cancellation'];
+      const isLocked = !ACTIVE_STATUSES.includes(session.status);
+
+      // Get partner info
+      const partnerId = session.user_id === userId ? session.jokies_id : session.user_id;
+      const partner = await db.prepare('SELECT id, username, full_name, avatar_url FROM users WHERE id = ?').get(partnerId) as any;
+
+      res.json({ success: true, messages, page, totalPages, total, isLocked, partner: partner || null });
     } catch (error) {
       console.error('[OrderChat] Error fetching messages:', error);
       res.status(500).json({ success: false, message: 'Gagal mengambil pesan chat' });
+    }
+  });
+
+  // POST /api/orders/:sessionId/chat/read - Mark messages as read
+  app.post('/api/orders/:sessionId/chat/read', requireAuth, async (req: any, res: any) => {
+    const sessionId = parseInt(req.params.sessionId, 10);
+    const userId = req.user.userId;
+
+    try {
+      const session = await db.prepare('SELECT id, user_id, jokies_id FROM sessions WHERE id = ?').get(sessionId) as any;
+      if (!session) return res.status(404).json({ success: false });
+      if (session.user_id !== userId && session.jokies_id !== userId) {
+        return res.status(403).json({ success: false });
+      }
+
+      // Mark all unread messages from the OTHER user as read
+      await db.prepare(`
+        UPDATE order_chats SET status = 'read', read_at = CURRENT_TIMESTAMP
+        WHERE session_id = ? AND sender_id != ? AND status != 'read'
+      `).run(sessionId, userId);
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('[OrderChat] Error marking read:', error);
+      res.status(500).json({ success: false });
+    }
+  });
+
+  // GET /api/orders/unread-chats - Get all sessions with unread messages for popup notifications
+  app.get('/api/orders/unread-chats', requireAuth, async (req: any, res: any) => {
+    const userId = req.user.userId;
+
+    try {
+      const unreads = await db.prepare(`
+        SELECT oc.session_id, oc.message, oc.created_at,
+               u.username AS sender_username, u.avatar_url AS sender_avatar, u.full_name AS sender_fullname,
+               s.title AS session_title, s.status AS session_status
+        FROM order_chats oc
+        JOIN users u ON u.id = oc.sender_id
+        JOIN sessions s ON s.id = oc.session_id
+        WHERE oc.session_id IN (
+          SELECT s2.id FROM sessions s2
+          WHERE (s2.user_id = ? OR s2.jokies_id = ?)
+            AND s2.status IN ('upcoming', 'ongoing', 'pending_completion')
+        )
+        AND oc.sender_id != ?
+        AND oc.status != 'read'
+        ORDER BY oc.created_at DESC
+      `).all(userId, userId, userId) as any[];
+
+      // Group by session, keep the latest message per session
+      const grouped: Record<number, any> = {};
+      for (const row of unreads) {
+        if (!grouped[row.session_id]) {
+          grouped[row.session_id] = {
+            session_id: row.session_id,
+            session_title: row.session_title,
+            session_status: row.session_status,
+            sender_username: row.sender_username,
+            sender_avatar: row.sender_avatar,
+            sender_fullname: row.sender_fullname,
+            latest_message: row.message,
+            latest_at: row.created_at,
+            unread_count: 0
+          };
+        }
+        grouped[row.session_id].unread_count++;
+      }
+
+      res.json({ success: true, chats: Object.values(grouped) });
+    } catch (error) {
+      console.error('[unread-chats] Error:', error);
+      res.status(500).json({ success: false, chats: [] });
     }
   });
 
@@ -4165,17 +5184,119 @@ async function startServer() {
   const httpServer = http.createServer(app);
   const io = new SocketServer(httpServer, { cors: { origin: '*' } });
 
-  // Content censorship: block phone numbers and image URLs
+  // ─────────────────────────────────────────────────────────────────────────
+  // CONTENT CENSORSHIP — blocks contact info, off-platform solicitation,
+  // hate speech, toxic language, and phishing/scam links.
+  // Returns the censored string; caller is responsible for warning the user.
+  // ─────────────────────────────────────────────────────────────────────────
   function censorMessage(msg: string): string {
-    // Block phone numbers (Indonesian format and international)
-    let censored = msg.replace(/(\+?\d{1,4}[\s-]?)?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}/g, '[nomor disensor]');
-    // Block image URLs
-    censored = censored.replace(/https?:\/\/\S+\.(jpg|jpeg|png|gif|webp|bmp|svg)/gi, '[gambar disensor]');
-    // Block data URIs
-    censored = censored.replace(/data:image\/[^;]+;base64,[^\s]+/gi, '[gambar disensor]');
-    // Block common image hostnames
-    censored = censored.replace(/https?:\/\/(imgur\.com|postimg|ibb\.co|prnt\.sc)[^\s]*/gi, '[gambar disensor]');
-    return censored;
+    // Helper: case-insensitive replace with label
+    const block = (pattern: RegExp, label: string) => (s: string) => s.replace(pattern, label);
+
+    // Normalise zero-width & lookalike chars attackers use to evade filters
+    let c = msg
+      .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '')          // zero-width chars
+      .replace(/[＠]/g, '@').replace(/[．。]/g, '.')         // fullwidth lookalikes
+      .replace(/\s*\.\s*/g, '.')                              // "bit . ly" → "bit.ly"
+      .replace(/\s*\/\s*/g, '/');                             // "discord . gg / xyz" → linkable
+
+    // ── 1. PHONE NUMBERS (Indonesian + international) ────────────────────
+    // Indonesian mobile: 08xx, +628xx, 628xx — with any separator between digit groups
+    c = c.replace(/(?:\+?62|0)[\s.\-_]?8[\s.\-_]?\d{2}[\s.\-_]?\d{3,4}[\s.\-_]?\d{3,5}/gi, '[nomor disensor]');
+    // Spaced-out digits trick: "0 8 1 2 3 4 5 6 7 8 9"
+    c = c.replace(/\b0[\s.\-_]?8[\s.\-_]?\d[\s.\-_]?\d[\s.\-_]?\d[\s.\-_]?\d[\s.\-_]?\d[\s.\-_]?\d[\s.\-_]?\d[\s.\-_]?\d?\b/g, '[nomor disensor]');
+    // Generic international / local numbers
+    c = c.replace(/(\+?\d{1,4}[\s\-.]?)?\(?\d{2,4}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{3,5}/g, '[nomor disensor]');
+
+    // ── 2. WHATSAPP (extra strict — very crucial) ─────────────────────────
+    c = c.replace(/\b(w\.?a\.?|w[\s_-]?a[\s_-]?|whatsapp|whatssap|whasap|wasap|watsap|wa\.?me\/?\S*|chat\.whatsapp\S*|api\.whatsapp\S*)\b/gi, '[kontak disensor]');
+    c = c.replace(/\b(hubungi\s+(wa|whatsapp)|kirim\s+(wa|pesan)|dm\s+(wa)|ping\s+(wa))\b/gi, '[kontak disensor]');
+
+    // ── 3. INSTAGRAM / TIKTOK ─────────────────────────────────────────────
+    // @username mentions
+    c = c.replace(/@[\w.]{2,}/g, '[akun disensor]');
+    // "IG:", "ig gw", "cek bio", "follow aku", "story", "highlight"
+    c = c.replace(/\b(ig|insta(gram)?|tiktok|tik\s*tok)\s*:?\s*[\w.@]*/gi, '[kontak disensor]');
+    c = c.replace(/\b(cek\s*bio|follow\s*(aku|gue|gw|me)|link\s*in\s*bio|dm\s*(aku|gue|gw|me)|kirimin\s*dm)\b/gi, '[kontak disensor]');
+
+    // ── 4. DISCORD ────────────────────────────────────────────────────────
+    c = c.replace(/discord\.gg\/\S+/gi, '[link disensor]');
+    c = c.replace(/\b(discord|dc)\s*(id|:|\s*gw|\s*gue|\s*aku|\.gg)\b/gi, '[kontak disensor]');
+    c = c.replace(/\b(add\s*(dc|discord)|id\s*dc|dc\s*id)\b/gi, '[kontak disensor]');
+    // Discord tag format: username#1234 or new username format
+    c = c.replace(/\b[\w.]{2,}#\d{4}\b/g, '[akun disensor]');
+
+    // ── 5. FACEBOOK / MESSENGER ───────────────────────────────────────────
+    c = c.replace(/\b(facebook|fb\.com|m\.me\/\S*|messenger|fb\s*messenger|grup\s*fb|grup\s*facebook|page\s*fb)\b/gi, '[kontak disensor]');
+    c = c.replace(/\b(add\s*(fb|facebook)|cari\s*(fb|facebook)|profil\s*fb)\b/gi, '[kontak disensor]');
+
+    // ── 6. GENERIC SOCIAL / CONTACT PLATFORMS ────────────────────────────
+    c = c.replace(/\b(telegram|tele|t\.me\/\S*|line\s*id|line\s*:?|bbm\s*:?|signal\s*:?|skype\s*:?|email\s*:?\s*[\w.+]+@[\w.]+)\b/gi, '[kontak disensor]');
+    // Email addresses
+    c = c.replace(/[\w.+\-]+@[\w\-]+\.[a-z]{2,}/gi, '[kontak disensor]');
+
+    // ── 7. OFF-PLATFORM TRANSACTION SOLICITATION (VERY CRUCIAL) ──────────
+    const offplatform = [
+      // Direct invitations
+      /\b(lewat\s*luar|di\s*luar\s*(platform|app|aplikasi)?|luar\s*platform|luar\s*app)\b/gi,
+      /\b(biar\s*(gak|ga|tidak)\s*ada\s*(admin|fee|potongan))\b/gi,
+      /\b(tanpa\s*(admin|platform|perantara|fee\s*platform))\b/gi,
+      /\b(langsung\s*(transfer|bayar|deal|ke\s*(aku|gue|gw|saya)))\b/gi,
+      /\b(direct|japri|dm\s*dulu|chat\s*pribadi|pesan\s*pribadi|kontak\s*pribadi)\b/gi,
+      /\b(hubungi\s*(aku|gue|gw|saya)\s*(langsung|dulu|aja))\b/gi,
+      // Price baiting
+      /\b(harga\s*(diskon\s*luar|luar|murah\s*luar|di\s*luar))\b/gi,
+      /\b(potongan\s*(admin|platform|fee)|admin\s*gede|fee\s*mahal|mending\s*langsung)\b/gi,
+      /\b(bayar\s*(cash|tunai|langsung)\s*(aja|saja)?)\b/gi,
+      // Disguised invitations  
+      /\b(kita\s*(deal|transaksi)\s*(di\s*luar|pribadi|sendiri))\b/gi,
+      /\b(ga\s*usah\s*pakai\s*(platform|aplikasi|app|admin))\b/gi,
+      /\b(ribet\s*(pakai|pake)\s*(platform|app|aplikasi))\b/gi,
+    ];
+    for (const rx of offplatform) c = c.replace(rx, '[transaksi luar disensor ⚠️]');
+
+    // ── 8. PHISHING & SCAM LINKS ─────────────────────────────────────────
+    // URL shorteners / anonymous redirect services
+    c = c.replace(/https?:\/\/(bit\.ly|tinyurl\.com|t\.co|ow\.ly|rb\.gy|is\.gd|cutt\.ly|short\.io|tiny\.cc|buff\.ly|adf\.ly|linktr\.ee|lnkd\.in|gg\.gg|v\.gd|clck\.ru|qr\.ae|u\.to|x\.co|shorturl\.at|go2l\.ink|2u\.pw|trib\.al|soo\.gd|mcaf\.ee|su\.pr|ff\.im|chilp\.it|twitthis\.com|u\.nu|urls\.im|forms\.gle|docs\.google\.com\/forms)[^\s]*/gi, '[link disensor]');
+    // Any raw URL that is not from acinonyx's own domain
+    c = c.replace(/https?:\/\/(?!acinonyx\.id|localhost)[^\s]+/gi, '[link disensor]');
+    // bare domain.tld patterns that evade the URL filter
+    c = c.replace(/\b(?!acinonyx\.id)\w[\w-]{1,62}\.(com|net|org|xyz|top|gg|io|me|info|biz|co|id|site|online|shop|store|click|link|space|live|fun|pw|cc|tk|ml|ga|cf|gq)\b(?:\/\S*)?/gi, '[link disensor]');
+    // Image URLs and data URIs
+    c = c.replace(/https?:\/\/\S+\.(jpg|jpeg|png|gif|webp|bmp|svg)/gi, '[gambar disensor]');
+    c = c.replace(/data:image\/[^;]+;base64,[^\s]+/gi, '[gambar disensor]');
+    c = c.replace(/https?:\/\/(imgur\.com|postimg|ibb\.co|prnt\.sc)[^\s]*/gi, '[gambar disensor]');
+
+    // ── 9. HATE SPEECH (SARA) ────────────────────────────────────────────
+    const sara = [
+      /\b(kafir|anjing\s*kafir|bangsat\s*china|cina\s*b+a+n+g+s+a+t|pribumi|aseng|babi\s*(kafir|cina)|go\s*home\s*(chinese|cina)|usir\s*(cina|kafir)|dasar\s*(kafir|cina|bule|negro|hitam))\b/gi,
+      /\b(rasis|rasisme|diskriminasi\s*(ras|agama|suku))\b/gi,
+    ];
+    for (const rx of sara) c = c.replace(rx, '[ujaran kebencian disensor]');
+
+    // ── 10. TOXIC GAMING & PROFANITY (Indonesian) ────────────────────────
+    // Swear words — asterisked internally but labelled for the log
+    const profanity = [
+      // Core profanity
+      /\b(a+n+j+i+n+g+|a+n+j+e+n+g+|a+n+j+a+y+|e+n+j+i+n+g+|a+n+g+s+i+n+g+)\b/gi,
+      /\b(b+a+n+g+s+a+t+|b+e+n+g+s+e+t+|b+a+n+g+s+e+t+)\b/gi,
+      /\b(k+o+n+t+o+l+|m+e+m+e+k+|p+e+l+i+r+|t+o+k+e+l+|t+o+k+i+l+)\b/gi,
+      /\b(j+a+n+c+o+k+|j+a+n+c+u+k+|j+a+n+c+i+k+|j+a+n+c+u+k+)\b/gi,
+      /\b(g+o+b+l+o+k+|g+o+b+l+o+g+|t+o+l+o+l+|k+o+n+t+o+l+)\b/gi,
+      /\b(b+o+d+o+h+|i+d+i+o+t+|s+i+a+l+|c+e+l+a+k+a+)\b/gi,
+      /\b(b+a+j+i+n+g+a+n+|p+e+n+j+a+h+a+t+|k+e+p+a+r+a+t+)\b/gi,
+      /\b(m+e+m+e+k+|p+u+k+i+m+a+k+|c+o+n+t+o+l+)\b/gi,
+      /\b(s+i+a+l+a+n+|k+u+t+u+k+|b+e+r+e+n+g+s+e+k+)\b/gi,
+      /\b(a+s+u+|a+s+w+|b+i+a+n+g+k+e+l+a+d+i+)\b/gi,
+      // Toxic gaming phrases
+      /\b(n+o+o+b+|n+u+b+|b+o+t+\s*l+u+|u+s+e+l+e+s+s+|k+e+l+u+a+r+\s*d+o+n+g+k+o+l+|k+e+l+u+a+r+\s*n+o+o+b+)\b/gi,
+      /\b(r+e+p+o+r+t+\s*[\w\s]*n+o+o+b+|m+a+k+i+n+g+\s*t+e+a+m+\s*l+o+s+e+)\b/gi,
+      // "kill yourself" equivalents in Indonesian
+      /\b(m+a+t+i+\s*(a+j+a+|s+a+j+a+|s+i+k+a+n+)|m+a+t+i+i+n+\s+d+i+r+i+|b+u+n+u+h+\s+d+i+r+i+)\b/gi,
+    ];
+    for (const rx of profanity) c = c.replace(rx, '[kata kasar disensor]');
+
+    return c;
   }
 
   io.on('connection', (socket) => {
@@ -4195,31 +5316,374 @@ async function startServer() {
       socket.leave('admin-room');
     });
 
-    socket.on('send-order-message', async (data: { sessionId: number; senderId: number; message: string }) => {
+    socket.on('send-order-message', async (data: { sessionId: number; senderId: number; message: string; tempId?: number }) => {
+      const emitError = (reason: string) => {
+        socket.emit('message-error', { tempId: data.tempId, reason });
+      };
       try {
-        // Verify the session exists and is not pending/completed/cancelled
+        // Only allow chat on active sessions (whitelist approach)
         const session = await db.prepare('SELECT id, status, user_id, jokies_id FROM sessions WHERE id = ?').get(data.sessionId) as any;
-        if (!session) return;
-        if (['pending', 'completed', 'cancelled'].includes(session.status)) return;
+        if (!session) return emitError('Sesi tidak ditemukan');
+        const ACTIVE_STATUSES = ['upcoming', 'ongoing', 'pending_completion', 'pending_cancellation'];
+        if (!ACTIVE_STATUSES.includes(session.status)) return emitError('Chat tidak tersedia untuk sesi ini');
         // Verify sender is a participant
-        if (session.user_id !== data.senderId && session.jokies_id !== data.senderId) return;
+        if (session.user_id !== data.senderId && session.jokies_id !== data.senderId) return emitError('Anda bukan peserta sesi ini');
 
-        // Censor phone numbers and image URLs
+        // Censor content
         const censored = censorMessage(data.message);
-        // Save to DB
-        await db.prepare('INSERT INTO order_chats (session_id, sender_id, message) VALUES (?, ?, ?)').run(data.sessionId, data.senderId, censored);
-        // Broadcast to room
+        // Save to DB — try with status column first, fall back without it (handles missing column)
+        let result: any;
+        try {
+          result = await db.prepare("INSERT INTO order_chats (session_id, sender_id, message, status) VALUES (?, ?, ?, 'sent')").run(data.sessionId, data.senderId, censored);
+        } catch (insertErr: any) {
+          if (String(insertErr?.message).includes('status')) {
+            // status column not yet migrated — insert without it
+            result = await db.prepare('INSERT INTO order_chats (session_id, sender_id, message) VALUES (?, ?, ?)').run(data.sessionId, data.senderId, censored);
+          } else {
+            throw insertErr;
+          }
+        }
+        const msgId: number = result?.insertId || result?.insert_id || result?.lastInsertRowid || 0;
+        if (!msgId) { emitError('Gagal menyimpan pesan'); return; }
+
+        // Get sender info for popup notification
+        const sender = await db.prepare('SELECT username, avatar_url, full_name FROM users WHERE id = ?').get(data.senderId) as any;
+
+        // Broadcast to room — include tempId so sender can replace optimistic bubble
         io.to(`order-chat-${data.sessionId}`).emit('new-order-message', {
+          id: msgId,
+          tempId: data.tempId,   // echoed back so sender replaces their optimistic msg
           session_id: data.sessionId,
           sender_id: data.senderId,
+          sender_username: sender?.username || '',
+          sender_avatar: sender?.avatar_url || null,
           message: censored,
+          read_status: 'sent',
+          read_at: null,
           created_at: new Date().toISOString()
         });
+
+        // Emit notification event for the OTHER participant (for mobile popup)
+        const recipientId = session.user_id === data.senderId ? session.jokies_id : session.user_id;
+        io.to(`user-${recipientId}`).emit('chat-notification', {
+          session_id: data.sessionId,
+          sender_username: sender?.username || '',
+          sender_avatar: sender?.avatar_url || null,
+          sender_fullname: sender?.full_name || '',
+          message: censored,
+          created_at: new Date().toISOString(),
+          session_title: '' // Client can fill from local state
+        });
+
+        // Mark as delivered if recipient is in the room
+        const room = io.sockets.adapter.rooms.get(`order-chat-${data.sessionId}`);
+        if (room && room.size > 1) {
+          await db.prepare("UPDATE order_chats SET status = 'delivered' WHERE id = ?").run(msgId);
+          io.to(`order-chat-${data.sessionId}`).emit('message-status-update', {
+            message_id: msgId,
+            status: 'delivered'
+          });
+        }
       } catch (err) {
         console.error('[OrderChat] Error sending message:', err);
+        socket.emit('message-error', { tempId: data.tempId, reason: 'Gagal mengirim pesan' });
       }
     });
+
+    // Mark messages as read via socket (real-time receipt)
+    socket.on('mark-read', async (data: { sessionId: number; userId: number }) => {
+      try {
+        const updated = await db.prepare(`
+          UPDATE order_chats SET status = 'read', read_at = CURRENT_TIMESTAMP
+          WHERE session_id = ? AND sender_id != ? AND status != 'read'
+        `).run(data.sessionId, data.userId) as any;
+
+        if (updated.changes > 0 || updated.affectedRows > 0) {
+          io.to(`order-chat-${data.sessionId}`).emit('messages-read', {
+            session_id: data.sessionId,
+            reader_id: data.userId
+          });
+        }
+      } catch (err) {
+        console.error('[OrderChat] Error marking read:', err);
+      }
+    });
+
+    // Join personal notification room
+    socket.on('join-user-room', (userId: string) => {
+      socket.join(`user-${userId}`);
+    });
+
+    socket.on('leave-user-room', (userId: string) => {
+      socket.leave(`user-${userId}`);
+    });
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // BACKGROUND CRON JOB — runs every 2 minutes
+  // Handles auto-start, auto-cancel, auto-complete, and payment reconciliation
+  // across ALL sessions globally (not dependent on user page visits)
+  // ═══════════════════════════════════════════════════════════════════════════
+  let cronRunning = false;
+  const CRON_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
+
+  async function runCronTasks() {
+    if (cronRunning) return; // Prevent overlapping runs
+    cronRunning = true;
+    const cronStart = Date.now();
+
+    try {
+      const now = new Date();
+      const nowIso = now.toISOString();
+
+      // ── 1. Auto-start: upcoming sessions whose scheduled_at has passed ──
+      try {
+        const toStart = (await db.prepare(
+          "SELECT id, user_id, jokies_id FROM sessions WHERE status = 'upcoming' AND scheduled_at <= ?"
+        ).all(nowIso)) as any[];
+        for (const s of toStart) {
+          await db.prepare("UPDATE sessions SET status = 'ongoing', started_at = NOW() WHERE id = ? AND status = 'upcoming'").run(s.id);
+        }
+        if (toStart.length > 0) console.log(`[Cron] Auto-started ${toStart.length} session(s)`);
+      } catch (e) {
+        console.error('[Cron] Auto-start error:', e);
+      }
+
+      // ── 2. Auto-cancel: upcoming sessions past scheduled_at + duration (never started) ──
+      try {
+        const upcoming = (await db.prepare(
+          "SELECT id, jokies_id, total_price, duration, scheduled_at FROM sessions WHERE status = 'upcoming'"
+        ).all()) as any[];
+        let cancelCount = 0;
+        for (const s of upcoming) {
+          const end = new Date(new Date(s.scheduled_at).getTime() + (s.duration || 1) * 60 * 60 * 1000);
+          if (now > end) {
+            await db.transaction(async () => {
+              await db.prepare("UPDATE sessions SET status = 'cancelled', cancelled_at = NOW(), cancelled_by = 'system', cancellation_reason = 'Otomatis dibatalkan: melewati waktu booking + durasi tanpa dimulai' WHERE id = ? AND status = 'upcoming'").run(s.id);
+              if (s.jokies_id && s.total_price) {
+                await db.prepare('UPDATE users SET wallet_jokies = wallet_jokies + ? WHERE id = ?').run(s.total_price, s.jokies_id);
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  s.jokies_id, 'order_update', 'Pesanan Dibatalkan Otomatis',
+                  `Pesanan #${s.id} dibatalkan otomatis karena melewati waktu booking. Dana Rp ${(s.total_price || 0).toLocaleString()} dikembalikan ke wallet Anda.`
+                );
+              }
+            })();
+            cancelCount++;
+          }
+        }
+        if (cancelCount > 0) console.log(`[Cron] Auto-cancelled ${cancelCount} expired upcoming session(s)`);
+      } catch (e) {
+        console.error('[Cron] Auto-cancel upcoming error:', e);
+      }
+
+      // ── 3. Auto-cancel: pending_payment sessions older than 20 min (15 mid + 5 buffer) ──
+      try {
+        const pending = (await db.prepare(
+          "SELECT id, jokies_id, created_at FROM sessions WHERE status = 'pending_payment'"
+        ).all()) as any[];
+        let expireCount = 0;
+        for (const s of pending) {
+          const createdAt = new Date(s.created_at).getTime();
+          if (now.getTime() - createdAt > PAYMENT_TIMEOUT_MS) {
+            await db.transaction(async () => {
+              await db.prepare("UPDATE sessions SET status = 'cancelled', cancelled_at = NOW(), cancelled_by = 'system', cancellation_reason = 'Otomatis dibatalkan: pembayaran tidak diselesaikan dalam waktu yang ditentukan' WHERE id = ? AND status = 'pending_payment'").run(s.id);
+              await db.prepare("UPDATE payment_transactions SET payment_status = 'expire', escrow_status = 'none', updated_at = NOW() WHERE session_id = ? AND payment_status = 'pending'").run(s.id);
+              if (s.jokies_id) {
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  s.jokies_id, 'order_update', 'Pembayaran Kedaluwarsa',
+                  `Pesanan #${s.id} dibatalkan otomatis karena pembayaran tidak diselesaikan dalam waktu yang ditentukan.`
+                );
+              }
+            })();
+            expireCount++;
+          }
+        }
+        if (expireCount > 0) console.log(`[Cron] Auto-cancelled ${expireCount} expired pending_payment session(s)`);
+      } catch (e) {
+        console.error('[Cron] Auto-cancel pending_payment error:', e);
+      }
+
+      // ── 4. Auto-complete: ongoing sessions past scheduled_at + duration ──
+      try {
+        const ongoing = (await db.prepare(
+          "SELECT id, user_id, jokies_id, scheduled_at, duration, screenshot_start, screenshot_end, total_price, price, admin_fee, escrow_status, payment_transaction_id FROM sessions WHERE status = 'ongoing'"
+        ).all()) as any[];
+        let completeCount = 0;
+        let pendingCount = 0;
+        for (const s of ongoing) {
+          const endTime = new Date(new Date(s.scheduled_at).getTime() + (s.duration || 1) * 60 * 60 * 1000);
+          if (now > endTime) {
+            const hasProofs = !!(s.screenshot_start && s.screenshot_end);
+            await db.transaction(async () => {
+              if (hasProofs) {
+                // Auto-complete with escrow release
+                await db.prepare("UPDATE sessions SET status = 'completed', completed_at = NOW(), kijo_finished = 1, jokies_finished = 1, escrow_status = 'released' WHERE id = ? AND status = 'ongoing'").run(s.id);
+                const kijoEarnings = s.price || (s.total_price - (s.admin_fee || 0));
+                await db.prepare('UPDATE users SET balance_active = balance_active + ? WHERE id = ?').run(kijoEarnings, s.user_id);
+                if (s.payment_transaction_id) {
+                  await db.prepare("UPDATE payment_transactions SET escrow_status = 'released', released_at = NOW(), updated_at = NOW() WHERE id = ?").run(s.payment_transaction_id);
+                }
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  s.user_id, 'order_update', 'Pesanan Selesai Otomatis',
+                  `Pesanan #${s.id} telah diselesaikan otomatis. Dana Rp ${(kijoEarnings || 0).toLocaleString()} dicairkan ke Saldo Aktif Anda.`
+                );
+                if (s.jokies_id) {
+                  await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                    s.jokies_id, 'order_update', 'Pesanan Selesai Otomatis',
+                    `Pesanan #${s.id} telah diselesaikan otomatis karena durasi sesi telah selesai.`
+                  );
+                }
+                completeCount++;
+              } else {
+                // No proofs — move to pending_completion
+                await db.prepare("UPDATE sessions SET status = 'pending_completion', kijo_finished = 0 WHERE id = ? AND status = 'ongoing'").run(s.id);
+                await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                  s.user_id, 'order_update', 'Sesi Selesai — Unggah Bukti',
+                  `Durasi pesanan #${s.id} telah berakhir. Silakan unggah bukti pengerjaan (Sebelum & Sesudah) agar dana dapat dicairkan.`
+                );
+                if (s.jokies_id) {
+                  await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                    s.jokies_id, 'order_update', 'Durasi Sesi Berakhir',
+                    `Durasi pesanan #${s.id} telah berakhir. Menunggu Partner mengunggah bukti pengerjaan.`
+                  );
+                }
+                pendingCount++;
+              }
+            })();
+          }
+        }
+        if (completeCount > 0) console.log(`[Cron] Auto-completed ${completeCount} session(s) with proofs`);
+        if (pendingCount > 0) console.log(`[Cron] Moved ${pendingCount} session(s) to pending_completion (no proofs)`);
+      } catch (e) {
+        console.error('[Cron] Auto-complete error:', e);
+      }
+
+      // ── 5. Payment reconciliation: verify pending payments with Midtrans API ──
+      // Catches stuck pending_payment orders where webhook never arrived
+      if (MIDTRANS_SERVER_KEY) {
+        try {
+          const stuckPayments = (await db.prepare(
+            "SELECT pt.id, pt.order_id, pt.session_id, pt.jokies_id, pt.kijo_id, pt.total_amount, pt.payment_type, s.status as session_status, s.created_at FROM payment_transactions pt JOIN sessions s ON pt.session_id = s.id WHERE pt.payment_status = 'pending' AND s.created_at < ?"
+          ).all(new Date(now.getTime() - 5 * 60 * 1000).toISOString())) as any[]; // Only check payments older than 5 min
+
+          const authString = Buffer.from(MIDTRANS_SERVER_KEY + ':').toString('base64');
+          let reconCount = 0;
+
+          for (const p of stuckPayments) {
+            try {
+              const mtRes = await fetch(`${MIDTRANS_API_URL}/${p.order_id}/status`, {
+                headers: { 'Authorization': `Basic ${authString}`, 'Content-Type': 'application/json' },
+              });
+              if (!mtRes.ok) continue;
+
+              const mtData = await mtRes.json() as any;
+              const txnStatus = mtData.transaction_status;
+
+              if (txnStatus === 'settlement' || (txnStatus === 'capture' && mtData.fraud_status === 'accept')) {
+                await db.transaction(async () => {
+                  await db.prepare("UPDATE payment_transactions SET payment_status = 'settlement', escrow_status = 'held', settled_at = NOW(), payment_type = ?, midtrans_transaction_id = ?, raw_notification = ? WHERE id = ?")
+                    .run(mtData.payment_type || 'Midtrans', mtData.transaction_id || null, JSON.stringify(mtData), p.id);
+
+                  const currentSession = await db.prepare('SELECT status FROM sessions WHERE id = ?').get(p.session_id) as any;
+                  if (currentSession?.status === 'pending_payment') {
+                    await db.prepare("UPDATE sessions SET status = 'upcoming', escrow_status = 'held', payment_method = ? WHERE id = ?")
+                      .run(mtData.payment_type || 'Midtrans', p.session_id);
+                  } else if (currentSession?.status === 'cancelled') {
+                    await db.prepare("UPDATE sessions SET status = 'upcoming', escrow_status = 'held', payment_method = ?, cancelled_at = NULL, cancelled_by = NULL, cancellation_reason = NULL WHERE id = ?")
+                      .run(mtData.payment_type || 'Midtrans', p.session_id);
+                  }
+
+                  const session = await db.prepare('SELECT title FROM sessions WHERE id = ?').get(p.session_id) as any;
+                  await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                    p.kijo_id, 'order_new', 'Pesanan Baru!',
+                    `Anda menerima pesanan baru: ${session?.title || 'Pesanan'}. ID Pesanan: #${p.session_id}`
+                  );
+                  await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+                    p.jokies_id, 'system', 'Pembayaran Berhasil!',
+                    `Pembayaran untuk pesanan #${p.session_id} sebesar Rp ${p.total_amount.toLocaleString()} berhasil. Dana ditahan dalam Escrow.`
+                  );
+                })();
+                reconCount++;
+                console.log('[Cron] Reconciled payment for session:', p.session_id, 'order:', p.order_id);
+              } else if (['deny', 'cancel', 'expire'].includes(txnStatus)) {
+                // Midtrans confirmed failed — ensure session is cancelled
+                await db.transaction(async () => {
+                  await db.prepare('UPDATE payment_transactions SET payment_status = ? WHERE id = ?').run(txnStatus, p.id);
+                  await db.prepare("UPDATE sessions SET status = 'cancelled', cancelled_by = 'system', cancellation_reason = ?, cancelled_at = NOW() WHERE id = ? AND status = 'pending_payment'")
+                    .run(`Pembayaran ${txnStatus}`, p.session_id);
+                })();
+              }
+            } catch (e) {
+              // Skip individual payment errors, continue with others
+            }
+          }
+          if (reconCount > 0) console.log(`[Cron] Reconciled ${reconCount} stuck payment(s)`);
+        } catch (e) {
+          console.error('[Cron] Payment reconciliation error:', e);
+        }
+      }
+
+      // ── 6. Rating reminder: completed orders >24h without rating ──
+      try {
+        const unrated = (await db.prepare(`
+          SELECT s.id, s.jokies_id, s.user_id, u.full_name as kijo_name
+          FROM sessions s
+          LEFT JOIN users u ON s.user_id = u.id
+          WHERE s.status = 'completed'
+            AND s.completed_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)
+            AND s.completed_at > DATE_SUB(NOW(), INTERVAL 25 HOUR)
+            AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.session_id = s.id)
+            AND NOT EXISTS (SELECT 1 FROM notifications n WHERE n.user_id = s.jokies_id AND n.title = 'Jangan Lupa Beri Rating!' AND n.message LIKE CONCAT('%#', s.id, '%'))
+        `).all()) as any[];
+        for (const s of unrated) {
+          await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+            s.jokies_id, 'system', 'Jangan Lupa Beri Rating!',
+            `Pesanan #${s.id} dengan ${s.kijo_name || 'Partner'} sudah selesai. Beri rating untuk membantu Kijo membangun reputasi!`
+          );
+        }
+        if (unrated.length > 0) console.log(`[Cron] Sent ${unrated.length} rating reminder(s)`);
+      } catch (e) {
+        console.error('[Cron] Rating reminder error:', e);
+      }
+
+      // ── 7. Kijo auto-off: 3+ system-cancelled orders in 30 days → set unavailable ──
+      try {
+        const badKijos = (await db.prepare(`
+          SELECT s.user_id, COUNT(*) as miss_count
+          FROM sessions s
+          JOIN users u ON s.user_id = u.id AND u.role = 'kijo' AND u.status_ketersediaan != 'tidak_tersedia'
+          WHERE s.status = 'cancelled'
+            AND s.cancelled_by = 'system'
+            AND s.cancelled_at > DATE_SUB(NOW(), INTERVAL 30 DAY)
+          GROUP BY s.user_id
+          HAVING miss_count >= 3
+        `).all()) as any[];
+        for (const k of badKijos) {
+          await db.prepare("UPDATE users SET status_ketersediaan = 'tidak_tersedia' WHERE id = ?").run(k.user_id);
+          await db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+            k.user_id, 'system', 'Status Dinonaktifkan',
+            `Status ketersediaan Anda dinonaktifkan otomatis karena ${k.miss_count} pesanan terlewat dalam 30 hari terakhir. Aktifkan kembali jika sudah siap menerima pesanan.`
+          );
+        }
+        if (badKijos.length > 0) console.log(`[Cron] Auto-disabled ${badKijos.length} Kijo(s) for missed orders`);
+      } catch (e) {
+        console.error('[Cron] Kijo auto-off error:', e);
+      }
+
+    } catch (e) {
+      console.error('[Cron] Fatal error in cron tasks:', e);
+    } finally {
+      cronRunning = false;
+      const elapsed = Date.now() - cronStart;
+      if (elapsed > 10000) console.warn(`[Cron] Tasks took ${elapsed}ms (>10s) — consider optimization`);
+    }
+  }
+
+  // Start the cron interval
+  setInterval(runCronTasks, CRON_INTERVAL_MS);
+  // Run once at startup after a short delay (let server finish init)
+  setTimeout(runCronTasks, 5000);
+  console.log(`[Cron] Background tasks scheduled every ${CRON_INTERVAL_MS / 1000}s`);
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);

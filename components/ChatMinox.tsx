@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MessageSquare, Send, X, Clock, CheckCircle2, User, ShieldCheck } from 'lucide-react';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
 
 interface Message {
@@ -131,7 +130,6 @@ export default function ChatMinox({ user, isOpen, onClose }: ChatMinoxProps) {
             <div className="p-6 border-b border-border-main bg-bg-sidebar flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 bg-orange-primary/10 rounded-2xl flex items-center justify-center text-orange-primary border border-orange-primary/20">
-                  <MessageSquare size={24} />
                 </div>
                 <div>
                   <h3 className="text-lg font-bold text-text-main uppercase tracking-tight">Chat Minox</h3>
@@ -145,7 +143,7 @@ export default function ChatMinox({ user, isOpen, onClose }: ChatMinoxProps) {
                 onClick={onClose}
                 className="p-2 text-text-muted hover:text-text-main hover:bg-bg-main rounded-xl transition-all"
               >
-                <X size={20} />
+                <span>×</span>
               </button>
             </div>
 
@@ -203,9 +201,7 @@ export default function ChatMinox({ user, isOpen, onClose }: ChatMinoxProps) {
                 >
                   {loading ? (
                     <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <Send size={20} />
-                  )}
+                  ) : <span className="font-bold text-sm">→</span>}
                 </button>
               </form>
               <p className="text-[11px] text-text-muted text-center mt-4 font-semibold uppercase tracking-wide">

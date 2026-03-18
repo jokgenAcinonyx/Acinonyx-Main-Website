@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Star, Clock, ChevronRight, Gamepad2, Wallet, ChevronDown } from 'lucide-react';
+import { Star } from 'lucide-react';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
 
 type MainView = 'dashboard' | 'etalase' | 'notifications' | 'traits' | 'account' | 'marketplace' | 'orders' | 'kijo-store';
@@ -56,7 +56,6 @@ export default function MarketplacePage({ user, setView, onOrderSuccess, systemS
       <div className="max-w-7xl mx-auto px-4 py-12 md:py-20">
         <div className="bg-bg-sidebar border border-border-main rounded-2xl p-12 md:p-20 text-center shadow-sm">
           <div className="w-20 h-20 bg-orange-primary/10 rounded-2xl flex items-center justify-center text-orange-primary mx-auto mb-8">
-            <Clock size={40} />
           </div>
           <h2 className="text-2xl md:text-3xl font-bold text-text-main uppercase tracking-tighter mb-4">Marketplace Sedang Dibekukan</h2>
           <p className="text-text-muted text-sm md:text-base font-bold uppercase tracking-widest max-w-xl mx-auto leading-relaxed">
@@ -111,11 +110,10 @@ export default function MarketplacePage({ user, setView, onOrderSuccess, systemS
     <div className="space-y-6 animate-in fade-in duration-500 pb-20">
       {/* Search Bar Only */}
       <div className="relative group">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted group-focus-within:text-orange-primary transition-colors" size={18} />
         <input 
           type="text" 
           placeholder="Cari username atau nama Kijo..."
-          className="w-full bg-bg-sidebar border border-border-main rounded-2xl py-4 pl-12 pr-4 text-text-main placeholder:text-text-muted focus:outline-none focus:border-orange-primary transition-all text-sm font-bold shadow-sm"
+          className="w-full bg-bg-sidebar border border-border-main rounded-2xl py-4 pl-4 pr-4 text-text-main placeholder:text-text-muted focus:outline-none focus:border-orange-primary transition-all text-sm font-bold shadow-sm"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -129,10 +127,8 @@ export default function MarketplacePage({ user, setView, onOrderSuccess, systemS
             className="w-full flex items-center justify-between sm:justify-start gap-3 bg-bg-sidebar border border-border-main px-4 sm:px-6 py-3 sm:py-3.5 rounded-xl text-xs sm:text-xs font-semibold uppercase tracking-wide text-text-main hover:border-orange-primary transition-all"
           >
             <div className="flex items-center gap-3">
-              <Gamepad2 size={16} className="text-orange-primary" />
               {selectedGame}
             </div>
-            <ChevronDown size={14} className={`transition-transform ${showGameDropdown ? 'rotate-180' : ''}`} />
           </button>
           
           <AnimatePresence>
@@ -165,7 +161,6 @@ export default function MarketplacePage({ user, setView, onOrderSuccess, systemS
         <div className="hidden sm:block flex-1 h-px bg-border-main/50" />
         
         <div className="w-full sm:w-auto flex items-center justify-center gap-2 bg-bg-sidebar/50 px-4 py-2 rounded-full border border-border-main">
-          <Wallet size={14} className="text-orange-primary" />
           <span className="text-xs sm:text-xs font-bold text-text-muted uppercase">Refund: <span className="text-text-main">Rp {user.wallet_jokies?.toLocaleString() || '0'}</span></span>
         </div>
       </div>
@@ -252,7 +247,6 @@ export default function MarketplacePage({ user, setView, onOrderSuccess, systemS
                 <div className="flex items-center justify-between pt-2 md:pt-3 border-t border-border-main">
                   <span className="text-[11px] md:text-[11px] text-text-muted font-semibold uppercase tracking-wide">{kijo.total_reviews} Ulasan</span>
                   <div className="text-orange-primary group-hover:translate-x-1 transition-transform">
-                    <ChevronRight size={14} className="md:w-4 md:h-4" />
                   </div>
                 </div>
               </div>
